@@ -6,8 +6,6 @@ from dataclasses import dataclass, field
 from dataclasses import dataclass, field
 import scipy.linalg
 from typing import ClassVar, Dict, List
-from numba import njit, jit
-from numba.experimental import jitclass
 
 
 UNIVERSALGASCONSTANT = 8.31446261815324 #J/molK
@@ -79,33 +77,50 @@ class Reaction:
             
         self.molarMasses = np.array(molar_masses_list)
 
+    def _equilibriumMask(self,
+                        rateForward: np.ndarray,
+                        rateBackward: np.ndarray,
+                        rel_tol: float = 1e-2,
+                        abs_tol: float = 1e-4) -> np.ndarray:
+        rateForward = np.asarray(rateForward, dtype=float)
+        rateBackward = np.asarray(rateBackward, dtype=float)
+
+        net_rate = rateForward - rateBackward
+        scale = np.maximum(np.maximum(np.abs(rateForward), np.abs(rateBackward)), 1.0)
+
+        return np.abs(net_rate) <= (rel_tol * scale + abs_tol)
+
+
     def forwardRateConstant(self, T: np.ndarray) -> np.ndarray:
-        T = np.asarray(T, dtype=float)
+        T = np.maximum(np.asarray(T, dtype=float), 1e-12)
         arg = -self.ahrreniusActivationEnergy / (UNIVERSALGASCONSTANT * T)
         return self.ahrreniusPreExponent * np.exp(arg)
 
+
     def equilibriumConstant(self, T: np.ndarray) -> np.ndarray:
-        T = np.asarray(T, dtype=float)
+        T = np.maximum(np.asarray(T, dtype=float), 1e-12)
         delta_G = self.enthalpyChange - T * self.entropyChange
 
         arg = -delta_G / (UNIVERSALGASCONSTANT * T)
         K_p = np.exp(arg)
         return np.clip(K_p, 1e-100, 1e100)
 
+
     def backwardRateConstant(self, T: np.ndarray) -> np.ndarray:
-        T = np.asarray(T, dtype=float)
+        T = np.maximum(np.asarray(T, dtype=float), 1e-12)
         if not self.isReversible:
             return np.zeros_like(T)
-        
+
         k_f = self.forwardRateConstant(T)
         K_p = self.equilibriumConstant(T)
-        
+
         delta_nu = np.sum(self.stochiometricCoefficients)
         K_c = K_p * ((P_REF / (UNIVERSALGASCONSTANT * T)) ** delta_nu)
 
         K_c = np.clip(K_c, 1e-50, np.inf)
         k_b = k_f / K_c
         return k_b
+
 
     def enthalpyReactionChange(self, T: np.ndarray) -> np.ndarray:
         T = np.asarray(T, dtype=float)
@@ -115,36 +130,16 @@ class Reaction:
             delta_H_rxn += nu_i * sp.enthalpy(T)
 
         return delta_H_rxn
-    
-    def reactionHeatSourceDerivative(self, T: np.ndarray, rates: tuple) -> np.ndarray:
-        T = np.maximum(np.asarray(T, dtype=float), 1e-3)
-        rateForward, rateBackward = rates
-        
-        delta_cp = np.zeros_like(T)
-        for nu_i, sp in zip(self.stochiometricCoefficients, self.species):
-            delta_cp += nu_i * sp.heatCapacity(T)
-            
-        term_den = UNIVERSALGASCONSTANT * (T ** 2)
-        dRf_dT = rateForward * (self.ahrreniusActivationEnergy / term_den) 
-        
-        delta_H_rxn = self.enthalpyReactionChange(T)
-        
-        if self.isReversible:
-            dRb_dT = rateBackward * ((self.ahrreniusActivationEnergy - delta_H_rxn) / term_den)
-        else:
-            dRb_dT = np.zeros_like(dRf_dT)
-        dQ_dT = - (dRf_dT - dRb_dT) * delta_H_rxn - (rateForward - rateBackward) * delta_cp
-        
-        return dQ_dT
-    
+
+
     def reactionRate(self, T: np.ndarray, concentrations: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         T = np.asarray(T, dtype=float)
         C = np.asarray(concentrations, dtype=float)
 
-        C_safe = np.maximum(C, 1e-20) 
-        alpha  = np.asarray(self.speciesExponent, dtype=float)[:, np.newaxis]
+        C_safe = np.maximum(C, 1e-20)
+        alpha = np.asarray(self.speciesExponent, dtype=float)[:, np.newaxis]
         massActionForward = np.prod(C_safe ** alpha, axis=0)
-        
+
         rateForward = self.forwardRateConstant(T) * massActionForward
 
         if not self.isReversible:
@@ -157,31 +152,106 @@ class Reaction:
 
         return rateForward, rateBackward
 
-    def reactionMassSource(self, rates: tuple) -> np.ndarray:
+
+    def reactionMassSource(self,
+                        rates: tuple,
+                        rel_tol: float = 1e-5,
+                        abs_tol: float = 1e-12) -> np.ndarray:
         rateForward, rateBackward = rates
+        rateForward = np.asarray(rateForward, dtype=float)
+        rateBackward = np.asarray(rateBackward, dtype=float)
+
         net_rate = rateForward - rateBackward
-        massSources = (net_rate[np.newaxis, :] * self.stochiometricCoefficients[:, np.newaxis]) * self.molarMasses[:, np.newaxis]
+        near_eq = self._equilibriumMask(rateForward, rateBackward, rel_tol=rel_tol, abs_tol=abs_tol)
+
+        net_rate = net_rate.copy()
+        net_rate[near_eq] = 0.0
+
+        massSources = (
+            net_rate[np.newaxis, :]
+            * self.stochiometricCoefficients[:, np.newaxis]
+            * self.molarMasses[:, np.newaxis]
+        )
         return massSources
 
-    def reactionHeatSource(self, T: np.ndarray, rates: tuple):
+
+    def reactionHeatSource(self,
+                        T: np.ndarray,
+                        rates: tuple,
+                        rel_tol: float = 1e-5,
+                        abs_tol: float = 1e-12):
         rateForward, rateBackward = rates
+        rateForward = np.asarray(rateForward, dtype=float)
+        rateBackward = np.asarray(rateBackward, dtype=float)
+
         delta_H_rxn = self.enthalpyReactionChange(T)
-        return (rateForward - rateBackward) * delta_H_rxn
-    
-    def rateDerivativeConcentration(self, T: np.ndarray, C: np.ndarray, j: int) -> tuple[np.ndarray, np.ndarray]:
+        net_rate = rateForward - rateBackward
+        near_eq = self._equilibriumMask(rateForward, rateBackward, rel_tol=rel_tol, abs_tol=abs_tol)
+
+        q = -net_rate * delta_H_rxn
+        q = np.asarray(q, dtype=float)
+        q[near_eq] = 0.0
+        return q
+
+
+    def reactionHeatSourceDerivative(self,
+                                    T: np.ndarray,
+                                    rates: tuple,
+                                    rel_tol: float = 1e-4,
+                                    abs_tol: float = 1e-9) -> np.ndarray:
+        T = np.maximum(np.asarray(T, dtype=float), 1e-3)
+        rateForward, rateBackward = rates
+        rateForward = np.asarray(rateForward, dtype=float)
+        rateBackward = np.asarray(rateBackward, dtype=float)
+
+        near_eq = self._equilibriumMask(rateForward, rateBackward, rel_tol=rel_tol, abs_tol=abs_tol)
+
+        delta_cp = np.zeros_like(T)
+        for nu_i, sp in zip(self.stochiometricCoefficients, self.species):
+            delta_cp += nu_i * sp.heatCapacity(T)
+
+        delta_H_rxn = self.enthalpyReactionChange(T)
+        delta_nu = float(np.sum(self.stochiometricCoefficients))
+
+        R = UNIVERSALGASCONSTANT
+        term_den = R * T**2
+
+        dRf_dT = rateForward * (self.ahrreniusActivationEnergy / term_den)
+
+        if self.isReversible:
+            dRb_dT = rateBackward * (
+                (self.ahrreniusActivationEnergy - delta_H_rxn) / term_den
+                + delta_nu / T
+            )
+        else:
+            dRb_dT = np.zeros_like(dRf_dT)
+
+        net_rate = rateForward - rateBackward
+        dQ_dT = -(dRf_dT - dRb_dT) * delta_H_rxn - net_rate * delta_cp
+
+        dQ_dT = np.asarray(dQ_dT, dtype=float)
+        dQ_dT[near_eq] = 0.0
+
+        return dQ_dT
+
+
+    def rateDerivativeConcentration(self,
+                                    T: np.ndarray,
+                                    C: np.ndarray,
+                                    j: int) -> tuple[np.ndarray, np.ndarray]:
         T = np.asarray(T, dtype=float)
         C = np.asarray(C, dtype=float)
 
-        alpha = np.asarray(self.speciesExponent, dtype=float)[:, np.newaxis]  
+        alpha = np.asarray(self.speciesExponent, dtype=float)[:, np.newaxis]
         C_safe = np.maximum(C, 1e-20)
-        massActionForward = np.prod(C_safe ** alpha, axis=0) 
+        massActionForward = np.prod(C_safe ** alpha, axis=0)
         k_f = self.forwardRateConstant(T)
-        
+
         alpha_j = alpha[j, 0]
         Cj_safe = np.maximum(C[j, :], 1e-20)
-        
+
         dM_f_dCj = alpha_j * massActionForward / Cj_safe
-        dRf_dCj  = k_f * dM_f_dCj
+        dRf_dCj = k_f * dM_f_dCj
 
         if not self.isReversible:
             return dRf_dCj, np.zeros_like(dRf_dCj)
@@ -192,10 +262,10 @@ class Reaction:
 
         beta_j = beta[j, 0]
         dM_b_dCj = beta_j * massActionBackward / Cj_safe
-        dRb_dCj  = k_b * dM_b_dCj
-        
+        dRb_dCj = k_b * dM_b_dCj
+
         return dRf_dCj, dRb_dCj
-    
+        
     
 @dataclass
 class Mixture:
@@ -245,7 +315,6 @@ class Mixture:
 @dataclass
 class domainSetup:
     diameter: float
-    # Removed massFlowRate since it's calculated from inlet velocity
     inletMassFractions : np.ndarray = field(default_factory=lambda: np.array([])) 
 
 @dataclass 
@@ -435,43 +504,83 @@ class solver:
             T=self.temperatureField.cellField,
             speciesFractions=self.specieFields
         )
-    def sourcesEvaluation(self):
+    def sourcesEvaluation(self, omega_heat=0.05, omega_mass=0.15,
+                        eq_rel_tol=1e-2, eq_abs_tol=1e-4):
+        mass_old = self.massSources.copy()
+        massd_old = self.massSourcesDerivative.copy()
+
+        heat_rxn_old = getattr(self, "heatReactionSources", np.zeros_like(self.heatSources))
+        heatd_rxn_old = getattr(self, "heatReactionSourcesDerivative", np.zeros_like(self.heatSourcesDerivative))
+
         self.heatSources.fill(0.0)
         self.heatSourcesDerivative.fill(0.0)
         self.massSources.fill(0.0)
         self.massSourcesDerivative.fill(0.0)
 
-        C   = self.concentrationArray()      # (n_species, n_cells)
-        rho = self.density                   # (n_cells,)
-        Y   = self.specieFields              # (n_species, n_cells)
-        T   = self.temperatureField.cellField # Extract array once
+        if not hasattr(self, "heatReactionSources"):
+            self.heatReactionSources = np.zeros_like(self.heatSources)
+        if not hasattr(self, "heatReactionSourcesDerivative"):
+            self.heatReactionSourcesDerivative = np.zeros_like(self.heatSourcesDerivative)
 
-        reactionMask = (self.mesh.cell_mass_flag == True)
-        heatMask     = (self.mesh.cell_heat_flag == True)
+        self.heatReactionSources.fill(0.0)
+        self.heatReactionSourcesDerivative.fill(0.0)
 
-        self.heatSources[heatMask] = np.asarray(self.mesh.cell_heat_value)[heatMask]
+        C = self.concentrationArray()
+        rho = self.density
+        T = self.temperatureField.cellField
+
+        reactionMask = self.mesh.cell_mass_flag
+        heatMask = self.mesh.cell_heat_flag
+
+
+        self.heatSources[heatMask] += np.asarray(self.mesh.cell_heat_value, dtype=float)[heatMask]
         rateForward, rateBackward = self.reaction.reactionRate(T, C)
-        self.reactionRates[0, :]  = rateForward
-        self.reactionRates[1, :]  = rateBackward
+        self.reactionRates[0, :] = rateForward
+        self.reactionRates[1, :] = rateBackward
+
+        net_rate = rateForward - rateBackward
+        rate_scale = np.maximum(np.maximum(np.abs(rateForward), np.abs(rateBackward)), 1.0)
+        near_eq = np.abs(net_rate) <= (eq_rel_tol * rate_scale + eq_abs_tol)
+
+        near_eq = near_eq & reactionMask
+
         massSources_all = self.reaction.reactionMassSource((rateForward, rateBackward))
+        massSources_all[:, near_eq] = 0.0
         self.massSources[:, reactionMask] = massSources_all[:, reactionMask]
 
         M_species = self.reaction.molarMasses
-        stoich    = self.reaction.stochiometricCoefficients
+        stoich = self.reaction.stochiometricCoefficients
+
         for k in range(self.specieFields.shape[0]):
             dRf_dCk, dRb_dCk = self.reaction.rateDerivativeConcentration(T, C, j=k)
-            dOmega_dC = stoich[k] * M_species[k] * (dRf_dCk - dRb_dCk)  
+            dOmega_dC = stoich[k] * M_species[k] * (dRf_dCk - dRb_dCk)
+            dOmega_dC[near_eq] = 0.0
 
-            dCk_dYk  = rho / M_species[k]
+            dCk_dYk = rho / M_species[k]
             dOmega_dYk = dOmega_dC * dCk_dYk
             self.massSourcesDerivative[k, reactionMask] = dOmega_dYk[reactionMask]
 
         heatReactionSource = self.reaction.reactionHeatSource(T, (rateForward, rateBackward))
-        self.heatSources[reactionMask] += heatReactionSource[reactionMask]
         dQ_dT = self.reaction.reactionHeatSourceDerivative(T, (rateForward, rateBackward))
-        self.heatSourcesDerivative[reactionMask] = dQ_dT[reactionMask]
 
-    
+        heatReactionSource[near_eq] = 0.0
+        dQ_dT[near_eq] = 0.0
+
+        self.heatReactionSources[reactionMask] = heatReactionSource[reactionMask]
+        self.heatReactionSourcesDerivative[reactionMask] = dQ_dT[reactionMask]
+
+        self.heatReactionSources = (
+            (1.0 - omega_heat) * heat_rxn_old + omega_heat * self.heatReactionSources
+        )
+        self.heatReactionSourcesDerivative = (
+            (1.0 - omega_heat) * heatd_rxn_old + omega_heat * self.heatReactionSourcesDerivative
+        )
+
+        self.heatSources += self.heatReactionSources
+        self.heatSourcesDerivative[:] = self.heatReactionSourcesDerivative
+
+        self.massSources = (1.0 - omega_mass) * mass_old + omega_mass * self.massSources
+        self.massSourcesDerivative = (1.0 - omega_mass) * massd_old + omega_mass * self.massSourcesDerivative
     def matrixSpecieEquationAssembly(self, specieIndex: int):
         n = self.mesh.n_cells
         F = float(self.massFlux)
@@ -501,32 +610,27 @@ class solver:
         return A, b
     
     def matrixTemperatureEquationAssembly(self):
-        n       = self.mesh.n_cells
-        F       = float(self.massFlux)
-        
-        T_old   = self.temperatureField.cellField 
-        cp_mix  = self.mixture.mixtureHeatCapacity(T_old, self.specieFields)  
-        Q       = self.heatSources                      
-        dQ_dT   = self.heatSourcesDerivative       
-        V       = self.mesh.cell_volumes               
+        n = self.mesh.n_cells
+        F = float(self.massFlux)
+
+        T_old = np.asarray(self.temperatureField.cellField, dtype=float)
+        cp_mix = np.asarray(self.mixture.mixtureHeatCapacity(T_old, self.specieFields), dtype=float)
+        Q = np.asarray(self.heatSources, dtype=float)
+        dQ_dT = np.asarray(self.heatSourcesDerivative, dtype=float)
+        V = np.asarray(self.mesh.cell_volumes, dtype=float)
+
+        Sp = np.minimum(dQ_dT, 0.0)
+        Su = Q - Sp * T_old
 
         A = np.zeros((n, n), dtype=float)
-        A += np.diag(-F * cp_mix)
-        A += np.diag(F * cp_mix[1:], k=-1)
+        A += np.diag(F * cp_mix)
+        A += np.diag(-F * cp_mix[1:], k=-1)
 
-        dQ_dT = np.clip(dQ_dT, -1e10, 1e10)
+        A += np.diag(-Sp * V)
 
-        dQ_dT_implicit = np.minimum(dQ_dT, 0.0)
-        A   += np.diag(dQ_dT_implicit * V)
-        
-        # FIX 2: Positive Q for heat generation
-        Q_U = Q - dQ_dT_implicit * T_old 
-        
         b = np.zeros(n, dtype=float)
-
-        b[1:]   = Q_U[1:] * V[1:]
-        A[0, 0] = F * cp_mix[0] - dQ_dT_implicit[0] * V[0]
-        b[0]    = F * cp_mix[0] * self.inlet.temperature + Q_U[0] * V[0]
+        b[1:] = Su[1:] * V[1:]
+        b[0] = F * cp_mix[0] * self.inlet.temperature + Su[0] * V[0]
 
         return A, b
     
@@ -751,24 +855,25 @@ if __name__ == "__main__":
         speciesExponent=np.array([1.0, 0.5, 0.0, 0.0]),
         reversedSpecieExponent=np.array([0.0, 0.0, 1.0, 0.0]),
         isReversible=True,
-        ahrreniusPreExponent= 10e10,
+        ahrreniusPreExponent= 50e9,
         ahrreniusActivationEnergy= 165000.,
         species=species
     )
 
-    z0 = Zone(length=2.0, type="reaction")
+    z0 = Zone(length=1.0, type="reaction")
     z0.zoneAssign(heating=False, reaction=True)
     z0.zoneAssignHeating(0.0)
 
     z1 = Zone(length=1.0, type="heating")
     z1.zoneAssign(heating=True, reaction=False)
-    z1.zoneAssignHeating(5000.0)
+    z1.zoneAssignHeating(-50000.0)
 
-    z2 = Zone(length=2.0, type="reaction")
+    z2 = Zone(length=1.0, type="reaction")
     z2.zoneAssign(heating=False, reaction=True)
     z2.zoneAssignHeating(0.0)
 
-    Y_so2 = 0.11
+
+    Y_so2 = 0.08
     Y_so3 = 1e-6
     Y_o2 = 0.21 * (1 - Y_so2)
     Y_n2 = 1 - Y_so2 - Y_o2 - Y_so3
@@ -777,7 +882,7 @@ if __name__ == "__main__":
         diameter=2.5,
         inletMassFractions=np.array([Y_so2, Y_o2, Y_so3, Y_n2])
     )
-    mesh = Mesh(domain=domain, zoneList=[z0, z1, z2], sizing=0.01)
+    mesh = Mesh(domain=domain, zoneList=[z0, z1, z2], sizing=0.005)
     mesh.meshCreate()
 
     Yso2_field = scalarField("Y_so2")
@@ -791,7 +896,7 @@ if __name__ == "__main__":
     Yn2_field.fieldInitialize(mesh)
     specieFields = [Yso2_field, Yo2_field, Yso3_field, Yn2_field]
     
-    inlet = Inlet(0, 1, 690, [Y_so2, Y_o2, Y_so3, Y_n2])
+    inlet = Inlet(0, 2.5, 690, [Y_so2, Y_o2, Y_so3, Y_n2])
     mixture = Mixture(
         densityModel="ideal-incompressible-gas",
         densityValue=0.457,
@@ -801,7 +906,7 @@ if __name__ == "__main__":
     sol = solver(mesh=mesh, mixture=mixture, reaction=reaction, specieFields=specieFields, inlet=inlet)
     sol.initializeCase()
 
-    sol.steadyState(max_iter=350, relaxationFactorSpecie=0.1, relaxationFactorTemperature=0.1, convergenceCriteria=1e-5)
+    sol.steadyState(max_iter=450, relaxationFactorSpecie=0.2, relaxationFactorTemperature=0.15, convergenceCriteria=1e-5)
     
     plotter = ReactorPlotter(sol)
     plotter.plot_all()

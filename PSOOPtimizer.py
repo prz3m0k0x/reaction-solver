@@ -7,16 +7,18 @@ from typing import Callable
 from solverReactor import Specie, Reaction, Mixture, domainSetup, Inlet, Zone, Mesh, scalarField, solver
 
 
-def wrapper(f, param1, param2):
+def wrapper(f, param1, param2, i):
+    print("wrapper i =", i, "len =", len(param1))
     y1 = np.zeros_like(param1)
     y2 = np.zeros_like(param1)
     for i in range(len(param1)):
         result = f(param1[i], param2[i])
         y1[i] = - result[0]
         y2[i] = - result[1]
-    return y1, y2 
+    return y1, y2
 
 def runner(param1, param2):
+    print("runner start", param1, param2)
     cp_o2_coeffs = [3.53]
     cp_so2_coeffs = [3.53]
     cp_so3_coeffs = [3.53]
@@ -65,33 +67,33 @@ def runner(param1, param2):
         speciesExponent=np.array([1.0, 0.5, 0.0, 0.0]),
         reversedSpecieExponent=np.array([0.0, 0.0, 1.0, 0.0]),
         isReversible=True,
-        ahrreniusPreExponent= 10e10,
+        ahrreniusPreExponent= 50e10,
         ahrreniusActivationEnergy= 165000.,
         species=species
     )
 
-    z0 = Zone(length=2.0, type="reaction")
+    z0 = Zone(length=.5, type="reaction")
     z0.zoneAssign(heating=False, reaction=True)
     z0.zoneAssignHeating(0.0)
 
-    z1 = Zone(length=1.0, type="heating")
+    z1 = Zone(length=.5, type="heating")
     z1.zoneAssign(heating=True, reaction=False)
-    z1.zoneAssignHeating(5000.0)
+    z1.zoneAssignHeating(-50000.0)
 
-    z2 = Zone(length=2.0, type="reaction")
+    z2 = Zone(length=.5, type="reaction")
     z2.zoneAssign(heating=False, reaction=True)
     z2.zoneAssignHeating(0.0)
 
     Y_so2 = param1
     Y_so3 = 1e-6
-    Y_o2 = 0.21 * (1 - Y_so2)
+    Y_o2 = 0.21 * (1 - Y_so2 - Y_so3)
     Y_n2 = 1 - Y_so2 - Y_o2 - Y_so3
     
     domain = domainSetup(
         diameter=2.5,
         inletMassFractions=np.array([Y_so2, Y_o2, Y_so3, Y_n2])
     )
-    mesh = Mesh(domain=domain, zoneList=[z0, z1, z2], sizing=0.01)
+    mesh = Mesh(domain=domain, zoneList=[z0, z1, z2], sizing=0.0025)
     mesh.meshCreate()
 
     Yso2_field = scalarField("Y_so2")
@@ -115,10 +117,12 @@ def runner(param1, param2):
     sol = solver(mesh=mesh, mixture=mixture, reaction=reaction, specieFields=specieFields, inlet=inlet)
     sol.initializeCase()
 
-    results = sol.steadyState(max_iter=350, relaxationFactorSpecie=0.1, relaxationFactorTemperature=0.1, convergenceCriteria=1e-5)
+    results = sol.steadyState(max_iter=200, relaxationFactorSpecie=0.1, relaxationFactorTemperature=0.1, convergenceCriteria=1e-5)
     so3_productivity = sol.massFlux * results[2]
     conversion = results[2] * 64. / (Y_so2 * 80.)
     return so3_productivity, conversion
+
+    print("runner end")
 
 def TestFunction(particles: np.ndarray):
     """
@@ -134,23 +138,23 @@ def TestFunction(particles: np.ndarray):
 
     #quadratic
     y1 = (x1-3)**2 + (x2-3)**2
-    y2 = (x1+5)**2 + (x2+5)**2
+    # y2 = (x1+5)**2 + (x2+5)**2
     #  Rastrigin
-    # A  = 10
-    # y2 = (2 * A
-    #        + x1**2 - A * np.cos(2 * np.pi * x1)
-    #        + x2**2 - A * np.cos(2 * np.pi * x2))
+    A  = 10
+    y2 = (2 * A
+           + x1**2 - A * np.cos(2 * np.pi * x1)
+           + x2**2 - A * np.cos(2 * np.pi * x2))
 
     return y1, y2
 
 
 @dataclass
 class PSOConfig:
-    h_factor    : int = 30
-    max_iter    : int = 15
+    h_factor    : int = 3
+    max_iter    : int = 1
     n_params    : int = 2
     n_responses : int = 2
-    t_neighbors : int = 5
+    t_neighbors : int = 3
 
     w_init      : float = 0.7
     c1_init     : float = 0.6
@@ -367,8 +371,8 @@ class PSOOptimizer:
 
 
     def _evaluate(self, particles: np.ndarray, iteration: int = 0) -> np.ndarray:
-        y1, y2 = wrapper(f= runner, param1= particles[0], param2= particles[1])
-        return np.vstack([y1, y2])
+        y1, y2 = wrapper(runner, particles[0, :], particles[1, :], iteration)
+        return np.array([y1, y2])
 
 
     def run(self) -> Swarm:
@@ -397,98 +401,160 @@ class VisualizePSO:
         self.optimizer = optimizer
         self.config = config
         self.swarm = swarm
-            
-    def GridGen(self, axes: typing.ArrayLike = (0, 1), fixed_values: typing.ArrayLike = None, n_points: int = 200):
-        if fixed_values is None:
-            fixed_values = 0.5 * (np.array(self.config.x_lb) + np.array(self.config.x_ub))
-        
-        a, b = axes
-        xa = np.linspace(self.config.x_lb[a], self.config.x_ub[a], n_points)
-        xb = np.linspace(self.config.x_lb[b], self.config.x_ub[b], n_points)
 
-        Xa, Xb = np.meshgrid(xa, xb)
-
-        particles = np.tile(fixed_values[:, None], (1, Xa.size))
-        particles[a, :] = Xa.ravel()
-        particles[b, :] = Xb.ravel()
-        
-        return Xa, Xb, particles
-    
-    def plotter(self, plot_type: str, axes: typing.ArrayLike = (0, 1), n_points: int = 400):
-        """Plot types supported:
-        "tscheby" - creates Tchebycheff scalar plot in chosen coordinate system 
-        "pareto"  - creates 2D Pareto front of best designs in objective space
+    @staticmethod
+    def _pareto_mask(objectives: np.ndarray) -> np.ndarray:
         """
-        if plot_type == "tscheby":
-            Xa, Xb, grid_particles = self.GridGen(axes=axes, n_points=n_points)
-            values = self.optimizer._evaluate(grid_particles)
-            
-            z_ref = self.swarm.z_ref
-            z_nad = self.swarm.z_nad
-            scale = np.where(np.abs(z_nad - z_ref) > 1e-8, z_nad - z_ref, 1.0)
+        objectives: shape (n_obj, n_points), minimization assumed
+        returns: mask of shape (n_points,), True for non-dominated points
+        """
+        costs = objectives.T   # shape (n_points, n_obj)
+        n = costs.shape[0]
+        is_nd = np.ones(n, dtype=bool)
 
-            # 1. Calculate deviations for all 160,000 grid points
-            deviations = np.abs(values - z_ref[:, None]) / scale[:, None]
-            
-            # 2. Evaluate the scalar for every weight vector, then take the minimum
-            scalars = [
-                np.max(w[:, None] * deviations, axis=0)
-                for w in self.swarm.weights
-            ]
-            Z_base = np.min(np.vstack(scalars), axis=0)
-            
-            # 3. Add penalties (so bounds are visually respected) and reshape for contour
-            Z = Z_base + self.swarm._penalty(grid_particles)
-            Z = Z.reshape(Xa.shape)
-            
-            fig, ax = plt.subplots(figsize=(9, 7))
-            fig.patch.set_facecolor('#0d0d1a')
-            ax.set_facecolor('#0d0d1a')
+        for i in range(n):
+            if not is_nd[i]:
+                continue
+            dominated = np.all(costs <= costs[i], axis=1) & np.any(costs < costs[i], axis=1)
+            dominated[i] = False
+            if np.any(dominated):
+                is_nd[i] = False
 
-            hmap = ax.contourf(Xa, Xb, Z, levels=60, cmap='plasma', alpha=0.85)
-            ax.contour(Xa, Xb, Z, levels=18, colors='white', alpha=0.10, linewidths=0.4)
-            cbar = fig.colorbar(hmap, ax=ax, pad=0.02)
-            cbar.set_label('Tchebycheff scalar', color='white', fontsize=10)
-            cbar.ax.yaxis.set_tick_params(color='white')
-            plt.setp(plt.getp(cbar.ax.axes, 'yticklabels'), color='white')
-            
-            ax.set_xlabel(f"Parameter {axes[0]}", color="white")
-            ax.set_ylabel(f"Parameter {axes[1]}", color="white")
-            ax.tick_params(colors="white")
-            
-            # Plot final particles
-            ax.scatter(self.swarm.particles[axes[0], :], self.swarm.particles[axes[1], :], 
-                       color='cyan', edgecolors='white', s=20, label='Final Swarm')
-            ax.legend(facecolor='#0d0d1a', edgecolor='white', labelcolor='white')
-            plt.show()
+        # Correct non-dominance test
+        is_nd[:] = True
+        for i in range(n):
+            for j in range(n):
+                if i == j:
+                    continue
+                if np.all(costs[j] <= costs[i]) and np.any(costs[j] < costs[i]):
+                    is_nd[i] = False
+                    break
+        return is_nd
 
-        elif plot_type == "pareto":
-            # Extract final personal best objective values
-            y1, y2 = self.optimizer._evaluate(self.swarm.pbest_positions)
-            
+    def plotter(self, plot_type: str = "pareto", axes: typing.ArrayLike = (0, 1), show_history: bool = True):
+        """
+        Supported plot types:
+        - 'design': parameter-space scatter of final particles
+        - 'pareto': objective-space scatter of final pbest solutions
+        """
+
+        if plot_type == "design":
+            a, b = axes
             fig, ax = plt.subplots(figsize=(8, 6))
             fig.patch.set_facecolor('#0d0d1a')
             ax.set_facecolor('#0d0d1a')
-            
-            ax.scatter(y1, y2, color='magenta', alpha=0.8, edgecolor='white', s=40)
-            ax.set_xlabel("Objective 1", color="white")
-            ax.set_ylabel("Objective 2", color="white")
-            ax.set_title("Pareto Front", color="white")
-            ax.grid(color='gray', linestyle='--', linewidth=0.5, alpha=0.5)
+
+            if show_history and self.particle_history.shape[2] > 0:
+                n_particles = self.particle_history.shape[1]
+                n_iter = self.particle_history.shape[2]
+
+                for p in range(n_particles):
+                    traj_x = self.particle_history[a, p, :]
+                    traj_y = self.particle_history[b, p, :]
+                    ax.plot(traj_x, traj_y, color='white', alpha=0.12, linewidth=0.8)
+
+            ax.scatter(
+                self.swarm.pbest_positions[a, :],
+                self.swarm.pbest_positions[b, :],
+                color='cyan',
+                edgecolors='white',
+                s=45,
+                alpha=0.9,
+                label='Personal bests'
+            )
+
+            ax.scatter(
+                self.swarm.gbest_positions[a, :],
+                self.swarm.gbest_positions[b, :],
+                color='magenta',
+                edgecolors='white',
+                s=28,
+                alpha=0.7,
+                label='Neighborhood bests'
+            )
+
+            g = self.swarm.global_best_position
+            ax.scatter(
+                g[a], g[b],
+                color='yellow',
+                edgecolors='black',
+                s=120,
+                marker='*',
+                label='Global best scalar'
+            )
+
+            ax.set_xlabel(f"Parameter {a}", color="white")
+            ax.set_ylabel(f"Parameter {b}", color="white")
+            ax.set_title("PSO design-space evolution", color="white")
+            ax.grid(color='gray', linestyle='--', linewidth=0.5, alpha=0.35)
             ax.tick_params(colors="white")
+            ax.legend(facecolor='#0d0d1a', edgecolor='white', labelcolor='white')
+            plt.tight_layout()
             plt.show()
+
+        elif plot_type == "pareto":
+            gains = self.swarm.pbest_gains.copy()   # shape (2, N), minimization
+            nd_mask = self._pareto_mask(gains)
+
+            y1 = -gains[0, :]   # back to "maximize" interpretation for plotting
+            y2 = -gains[1, :]
+
+            fig, ax = plt.subplots(figsize=(8, 6))
+            fig.patch.set_facecolor('#0d0d1a')
+            ax.set_facecolor('#0d0d1a')
+
+            ax.scatter(
+                y1[~nd_mask], y2[~nd_mask],
+                color='gray',
+                alpha=0.45,
+                s=35,
+                label='Dominated'
+            )
+
+            ax.scatter(
+                y1[nd_mask], y2[nd_mask],
+                color='lime',
+                edgecolors='white',
+                s=60,
+                alpha=0.95,
+                label='Pareto front'
+            )
+
+            if np.sum(nd_mask) > 1:
+                order = np.argsort(y1[nd_mask])
+                ax.plot(
+                    y1[nd_mask][order],
+                    y2[nd_mask][order],
+                    color='lime',
+                    linewidth=1.4,
+                    alpha=0.85
+                )
+
+            ax.set_xlabel("SO3 productivity", color="white")
+            ax.set_ylabel("Conversion", color="white")
+            ax.set_title("Final Pareto set", color="white")
+            ax.grid(color='gray', linestyle='--', linewidth=0.5, alpha=0.35)
+            ax.tick_params(colors="white")
+            ax.legend(facecolor='#0d0d1a', edgecolor='white', labelcolor='white')
+            plt.tight_layout()
+            plt.show()
+
+        else:
+            raise ValueError("plot_type must be 'design' or 'pareto'")
 
 # Execution
 config = PSOConfig(
+    h_factor= 25,
+    max_iter= 15,
     n_params    = 2,
     n_responses = 2,
-    x_lb        = [0.05, 550],  # Fixed bounds to be identical shape
-    x_ub        = [0.2, 750]
+    x_lb        = [0.1, 600],  # Fixed bounds to be identical shape
+    x_ub        = [0.2, 800]
 )
 
 optimizer = PSOOptimizer.from_random(config)
 swarm = optimizer.run()
 
 visualizer = VisualizePSO(config, optimizer.logger, swarm, optimizer)
-visualizer.plotter(plot_type="tscheby")
+visualizer.plotter(plot_type="design")
 visualizer.plotter(plot_type="pareto")
