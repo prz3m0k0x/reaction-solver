@@ -72,15 +72,15 @@ def runner(param1, param2):
         species=species
     )
 
-    z0 = Zone(length=.5, type="reaction")
+    z0 = Zone(length=.5, zoneType="reaction")
     z0.zoneAssign(heating=False, reaction=True)
     z0.zoneAssignHeating(0.0)
 
-    z1 = Zone(length=.5, type="heating")
+    z1 = Zone(length=.5, zoneType="heating")
     z1.zoneAssign(heating=True, reaction=False)
     z1.zoneAssignHeating(-50000.0)
 
-    z2 = Zone(length=.5, type="reaction")
+    z2 = Zone(length=.5, zoneType="reaction")
     z2.zoneAssign(heating=False, reaction=True)
     z2.zoneAssignHeating(0.0)
 
