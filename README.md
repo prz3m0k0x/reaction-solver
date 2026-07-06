@@ -20,23 +20,28 @@ The pipeline is fully YAML-driven: mesh geometry, inlet conditions, species ther
 
 Clone the repository and set up a Python virtual environment with the required dependencies.
 
-​```bash
-# Clone the repository
-git clone REPOURL
+Clone the repository:
+​```
+bash
+git clone https://github.com/prz3m0k0x/reaction-solver
 cd <repository-folder>
-
-# Create a virtual environment
+​```
+Create a virtual environment:
+​```
 python3 -m venv venv
-
-# Activate it
+​```
+Activate it:
+​```
 source venv/bin/activate      # On Linux/macOS
 venv\Scripts\activate         # On Windows
-
-# Upgrade pip and install required packages
+​```
+Upgrade pip and install required packages:
+​```
 pip install --upgrade pip
 pip install numpy scipy matplotlib pyyaml
 ​```
-#You can also use requirements.txt to install dependecies
+You can also use requirements.txt to install dependecies:
+​```
 pip install --upgrade pip
 pip install -r requirements.txt 
 ​```
