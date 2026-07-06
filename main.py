@@ -227,7 +227,7 @@ def run_case(case_ctx, case_dir):
     urf = solver_cfg["underRelaxationFactors"]
 
     outlet_obj = slv.steadyState(
-        maxiter=int(solver_cfg.get("maxIter", 500)),
+        maxiter=int(solver_cfg.get("maxIter", 1000)),
         relaxationFactorSpecie=float(urf["species"]),
         relaxationFactorTemperature=float(urf["temperature"]),
         convergenceCriteria=float(solver_cfg["scaledResidual"]),

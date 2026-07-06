@@ -1,4 +1,4 @@
-# scripts/PSOOPtimizer.py
+
 from dataclasses import dataclass, field
 from typing import Callable
 import math
@@ -50,6 +50,7 @@ class PSOConfig:
                 raise ValueError("constr_lb must have one value per constraint")
             if self.constr_ub.size not in (0, n_constr):
                 raise ValueError("constr_ub must have one value per constraint")
+
     def pop_size(self) -> int:
         if self.n_responses == 1:
             return self.h_factor
@@ -86,11 +87,20 @@ class Swarm:
 
         self.velocity = np.random.uniform(-1.0, 1.0, self.particles.shape) * self.v_max
 
-        self.weights = config.das_dennis_weights(m=initial_gains.shape[0], H=config.h_factor)
-        diff = self.weights[:, None, :] - self.weights[None, :, :]
-        dist_matrix = np.linalg.norm(diff, axis=-1)
-        T = min(config.t_neighbors, dist_matrix.shape[0])
-        self.neighbors = np.argsort(dist_matrix, axis=1)[:, :T]
+        pop_size = self.particles.shape[1]
+        self.single_objective = config.n_responses == 1
+
+        if self.single_objective:
+            # No weight-vector decomposition needed; every particle shares
+            # the same global-best neighborhood (classic gbest PSO).
+            self.weights = None
+            self.neighbors = np.tile(np.arange(pop_size), (pop_size, 1))
+        else:
+            self.weights = config.das_dennis_weights(m=initial_gains.shape[0], H=config.h_factor)
+            diff = self.weights[:, None, :] - self.weights[None, :, :]
+            dist_matrix = np.linalg.norm(diff, axis=-1)
+            T = min(config.t_neighbors, dist_matrix.shape[0])
+            self.neighbors = np.argsort(dist_matrix, axis=1)[:, :T]
 
         self.z_ref = np.min(initial_gains, axis=1)
         self.z_nad = np.max(initial_gains, axis=1)
@@ -132,10 +142,17 @@ class Swarm:
             self.gbest_gains[:, i] = self.pbest_gains[:, best_idx]
 
     def _tcheby_scalars(self, gains: np.ndarray, particles: np.ndarray) -> np.ndarray:
-        scale = np.where(np.abs(self.z_nad - self.z_ref) > 1e-8, self.z_nad - self.z_ref, 1.0)
-        deviations = np.abs(gains - self.z_ref[:, np.newaxis]) / scale[:, np.newaxis]
-        weighted = self.weights.T * deviations
-        tcheby = np.max(weighted, axis=0)
+        if self.single_objective:
+            # Plain (unweighted) objective value, still normalized by the
+            # running ideal/nadir range so it stays on a comparable scale
+            # with the penalty term.
+            scale = self.z_nad[0] - self.z_ref[0] if abs(self.z_nad[0] - self.z_ref[0]) > 1e-8 else 1.0
+            tcheby = np.abs(gains[0] - self.z_ref[0]) / scale
+        else:
+            scale = np.where(np.abs(self.z_nad - self.z_ref) > 1e-8, self.z_nad - self.z_ref, 1.0)
+            deviations = np.abs(gains - self.z_ref[:, np.newaxis]) / scale[:, np.newaxis]
+            weighted = self.weights.T * deviations
+            tcheby = np.max(weighted, axis=0)
         return tcheby + self._penalty(particles)
 
     def step(self, w: float, c1: float, c2: float) -> None:
@@ -158,6 +175,11 @@ class Swarm:
     def update_bests(self, new_gains: np.ndarray) -> None:
         self.z_ref = np.minimum(self.z_ref, np.min(new_gains, axis=1))
         self.z_nad = np.maximum(self.z_nad, np.max(new_gains, axis=1))
+
+        # z_ref / z_nad just changed, so pbest_scalars computed on an older
+        # normalization is stale. Recompute it on the *current* pbest_gains
+        # under the updated ideal/nadir point before comparing.
+        self.pbest_scalars = self._tcheby_scalars(self.pbest_gains, self.pbest_positions)
 
         new_scalars = self._tcheby_scalars(new_gains, self.particles)
         improved = new_scalars < self.pbest_scalars

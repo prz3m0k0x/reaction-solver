@@ -12,14 +12,14 @@ parameters:
     bounds: [0.10, 0.20]
   - name: inlettemperature
     key: inlet.temperature
-    bounds: [750.0, 850.0]
+    bounds: [700.0, 800.0]
 outputs:
   - name: so2_conversion
     key: expr3
     goal: maximize
 
 pso:
-  hfactor: 25
+  hfactor: 5
   maxiter: 15
   tneighbors: 3
   winit: 0.7

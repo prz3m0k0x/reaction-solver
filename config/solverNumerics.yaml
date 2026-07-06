@@ -1,23 +1,19 @@
 ---
-scaledResidual: 1e-6
 
+scaledResidual: 1e-6
 reactionMassSource:
   relativeTolerance: 1e-4
   absoluteTolerance: 1e-10
-
 reactionHeatSource:
   relativeTolerance: 1e-4
   absoluteTolerance: 1e-9
-
 reactionHeatSourceDerivative:
   relativeTolerance: 1e-4
   absoluteTolerance: 1e-9
-
 underRelaxationFactors:
   species: 0.25
   temperature: 0.15
-  heatSource: 0.15
-  massSource: 0.15
-
+  heatSource: 0.05
+  massSource: 0.05
 temperatureClipLow: 200
 temperatureClipHigh: 2000
