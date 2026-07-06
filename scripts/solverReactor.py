@@ -15,115 +15,7 @@ import yaml
 
 @dataclass
 class Specie:
-    """
-    Represents a chemical species in a CFD/reaction simulation.
-
-    Each species is automatically assigned a unique integer ID upon instantiation
-    via a class-level counter. Thermodynamic properties (heat capacity and enthalpy)
-    can be modeled as either a constant value or a polynomial function of temperature.
-
-    Class Variables
-    ---------------
-    counter : int
-        Class-level counter used to assign unique IDs to each species instance.
-
-    Parameters
-    ----------
-    name : str
-        Name of the chemical species (e.g., 'H2O', 'O2', 'N2').
-    molarMass : float
-        Molar mass of the species [kg/mol].
-    heatCapacityModel : str, optional
-        Model used for heat capacity calculation. Accepted values:
-            - ``'const'``      : Constant heat capacity (default).
-            - ``'polynomial'`` : NASA-style polynomial fit, evaluated as
-                                 cp(T) = poly(T) * R, where R is the universal gas constant.
-        Default is ``'const'``.
-    enthalpyFormation : float, optional
-        Standard enthalpy of formation at reference temperature T_REF [J/mol].
-        Default is ``0.0``.
-    entropyFormation : float, optional
-        Standard entropy of formation at reference temperature T_REF [J/(mol·K)].
-        Default is ``0.0``.
-    heatCapacityValue : float, optional
-        Constant heat capacity value [J/(kg·K)], used when ``heatCapacityModel='const'``.
-        Default is ``900``.
-    heatCapacityCoefficients : list[float], optional
-        Polynomial coefficients for heat capacity [dimensionless, NASA form],
-        used when ``heatCapacityModel='polynomial'``. Coefficients are passed to
-        ``numpy.polynomial.Polynomial`` in ascending order (i.e., [a0, a1, a2, ...]).
-        Default is an empty list.
-
-    Attributes
-    ----------
-    id : int
-        Unique integer identifier assigned automatically at instantiation.
-    cp_poly : numpy.polynomial.Polynomial
-        Polynomial object for cp(T) evaluation. Set only when
-        ``heatCapacityModel='polynomial'``.
-    H_poly : numpy.polynomial.Polynomial
-        Antiderivative of ``cp_poly``, used for enthalpy integration.
-        Set only when ``heatCapacityModel='polynomial'``.
-
-    Methods
-    -------
-    heatCapacity(T)
-        Compute heat capacity at temperature(s) T.
-
-        Parameters
-        ----------
-        T : array-like
-            Temperature(s) [K].
-
-        Returns
-        -------
-        numpy.ndarray
-            Heat capacity [J/(kg·K)] for ``'const'`` model, or
-            [J/(mol·K)] for ``'polynomial'`` model (scaled by R).
-
-    enthalpy(T)
-        Compute total enthalpy (formation + sensible) at temperature(s) T.
-
-        Parameters
-        ----------
-        T : array-like
-            Temperature(s) [K].
-
-        Returns
-        -------
-        numpy.ndarray
-            Total enthalpy [J/kg] for ``'const'`` model, or
-            [J/mol] for ``'polynomial'`` model.
-
-        Notes
-        -----
-        Sensible enthalpy is computed relative to the global reference
-        temperature ``T_REF``. For the polynomial model:
-
-        .. math::
-
-            H_{sensible}(T) = R \int_{T_{ref}}^{T} c_p(T') \, dT'
-
-    Examples
-    --------
-    Constant heat capacity species:
-
-    >>> aluminum = Specie(name='Al', molarMass=0.027, heatCapacityValue=900)
-    >>> aluminum.heatCapacity(np.array([300, 500, 700]))
-    array([900., 900., 900.])
-
-    Polynomial heat capacity species (e.g., O2 with NASA coefficients):
-
-    >>> o2 = Specie(
-    ...     name='O2',
-    ...     molarMass=0.032,
-    ...     heatCapacityModel='polynomial',
-    ...     enthalpyFormation=0.0,
-    ...     heatCapacityCoefficients=[3.5, 0.0, -1e-5, 0.0, 2e-9]
-    ... )
-    >>> o2.heatCapacity(np.array([300.0, 1000.0]))
-    """
-
+   
     counter: ClassVar[int] = 0
     name: str
     molarMass: float
@@ -174,313 +66,6 @@ class Specie:
 @dataclass
 class Reaction:
     
-    """Represents a single elementary or global chemical reaction in a simulation.
-
-        This class encodes the full kinetic description of a reaction — stoichiometry,
-        Arrhenius rate parameters, species ordering, and thermodynamic state functions —
-        and exposes vectorized methods for computing forward/backward rates, mass sources,
-        and heat release over spatially distributed fields (NumPy arrays).
-
-        Reaction rates follow the Arrhenius law with optional reversibility via the
-        equilibrium constant derived from Gibbs free energy:
-
-        .. math::
-
-            k_f(T) = A \exp\!\left(-\frac{E_a}{R T}\right)
-
-        .. math::
-
-            K_p(T) = \exp\!\left(-\frac{\Delta G}{R T}\right), \quad
-            \Delta G = \Delta H_{rxn} - T \Delta S_{rxn}
-
-        .. math::
-
-            k_b(T) = \frac{k_f(T)}{K_c(T)}, \quad
-            K_c = K_p \left(\frac{P_{ref}}{R T}\right)^{\Delta\nu}
-
-        Parameters
-        ----------
-        name : str
-            Human-readable identifier for the reaction (e.g., ``'H2 + 0.5 O2 -> H2O'``).
-        stochiometricCoefficients : np.ndarray, optional
-            Array of stoichiometric coefficients ``nu_i`` for each species, shape ``(n,)``.
-            Reactants carry negative values; products carry positive values.
-            Default is an empty array.
-        speciesExponent : np.ndarray, optional
-            Forward reaction rate exponents ``alpha_i`` for each species in the mass-action
-            expression, shape ``(n,)``. Must satisfy ``len == len(stochiometricCoefficients)``.
-            Default is an empty array.
-        reversedSpecieExponent : np.ndarray, optional
-            Backward reaction rate exponents ``beta_i`` for each species in the reverse
-            mass-action expression, shape ``(n,)``. Must satisfy the same length constraint.
-            Default is an empty array.
-        isReversible : bool, optional
-            If ``True``, the backward rate is computed from the equilibrium constant.
-            If ``False``, the backward rate is zero. Default is ``True``.
-        ahrreniusPreExponent : float, optional
-            Arrhenius pre-exponential factor ``A`` [units depend on reaction order,
-            typically mol·m⁻³·s⁻¹]. Default is ``1.0``.
-        ahrreniusActivationEnergy : float, optional
-            Arrhenius activation energy ``E_a`` [J/mol]. Default is ``0.0``.
-        species : list[Specie], optional
-            Ordered list of :class:`Specie` instances participating in the reaction.
-            Must correspond 1-to-1 with the coefficient/exponent arrays.
-            Excluded from ``repr``. Default is an empty list.
-
-        Attributes
-        ----------
-        enthalpyChange : float
-            Standard enthalpy change of reaction at reference temperature ``T_REF``
-            [J/mol], computed as ``sum(nu_i * H°_f,i)``. Set in ``__post_init__``.
-        entropyChange : float
-            Standard entropy change of reaction at reference temperature ``T_REF``
-            [J/(mol·K)], computed as ``sum(nu_i * S°_i)``. Set in ``__post_init__``.
-        molarMasses : np.ndarray
-            Array of molar masses [kg/mol] for each species in the reaction order,
-            shape ``(n,)``. Set in ``__post_init__``.
-
-        Raises
-        ------
-        ValueError
-            If ``stochiometricCoefficients``, ``speciesExponent``, and
-            ``reversedSpecieExponent`` do not all have the same length.
-
-        Methods
-        -------
-        forwardRateConstant(T)
-            Compute the Arrhenius forward rate constant k_f(T).
-
-            Parameters
-            ----------
-            T : array-like
-                Temperature field [K]. Values are clipped to a minimum of 1e-12.
-
-            Returns
-            -------
-            np.ndarray
-                Forward rate constant [units consistent with ``ahrreniusPreExponent``].
-
-        equilibriumConstant(T)
-            Compute the pressure-based equilibrium constant K_p(T) from Gibbs energy.
-
-            Parameters
-            ----------
-            T : array-like
-                Temperature field [K].
-
-            Returns
-            -------
-            np.ndarray
-                K_p [-], clipped to ``[1e-100, 1e100]`` for numerical stability.
-
-        backwardRateConstant(T)
-            Compute the backward rate constant k_b(T) = k_f / K_c.
-
-            Converts K_p to the concentration-based K_c using the net mole change
-            ``delta_nu = sum(nu_i)`` and the reference pressure ``P_REF``:
-
-            .. math::
-
-                K_c = K_p \left(\frac{P_{ref}}{R T}\right)^{\Delta\nu}
-
-            Parameters
-            ----------
-            T : array-like
-                Temperature field [K].
-
-            Returns
-            -------
-            np.ndarray
-                Backward rate constant. Returns a zero array if ``isReversible=False``.
-
-        enthalpyReactionChange(T)
-            Compute the temperature-dependent reaction enthalpy
-            ``delta_H_rxn(T) = sum(nu_i * H_i(T))`` using species sensible + formation
-            enthalpies from :meth:`Specie.enthalpy`.
-
-            Parameters
-            ----------
-            T : array-like
-                Temperature field [K].
-
-            Returns
-            -------
-            np.ndarray
-                Reaction enthalpy [J/mol] at each grid point, shape ``(N,)``.
-
-        reactionRate(T, concentrations)
-            Compute forward and backward reaction rates via mass-action kinetics.
-
-            Forward rate:  ``r_f = k_f(T) * prod(C_i ** alpha_i)``
-
-            Backward rate: ``r_b = k_b(T) * prod(C_i ** beta_i)``
-
-            Concentrations are clipped to 1e-20 before applying power laws.
-
-            Parameters
-            ----------
-            T : array-like
-                Temperature field [K], shape ``(N,)``.
-            concentrations : array-like
-                Species concentration field [mol/m³], shape ``(n, N)``.
-
-            Returns
-            -------
-            tuple[np.ndarray, np.ndarray]
-                ``(rateForward, rateBackward)``, each shape ``(N,)`` [mol/(m³·s)].
-                ``rateBackward`` is all zeros if ``isReversible=False``.
-
-        reactionMassSource(rates, rel_tol=1e-5, abs_tol=1e-12)
-            Compute the per-species mass production/consumption rate [kg/(m³·s)].
-
-            Near-equilibrium cells are zeroed out to prevent stiff source contributions.
-
-            .. math::
-
-                \dot{m}_i = \nu_i \cdot M_i \cdot (r_f - r_b)
-
-            Parameters
-            ----------
-            rates : tuple[np.ndarray, np.ndarray]
-                ``(rateForward, rateBackward)`` from :meth:`reactionRate`.
-            rel_tol : float, optional
-                Relative equilibrium tolerance. Default is ``1e-5``.
-            abs_tol : float, optional
-                Absolute equilibrium tolerance. Default is ``1e-12``.
-
-            Returns
-            -------
-            np.ndarray
-                Mass source array, shape ``(n, N)`` [kg/(m³·s)].
-                Positive → net production; negative → net consumption.
-
-        reactionHeatSource(T, rates, rel_tol=1e-5, abs_tol=1e-12)
-            Compute the volumetric heat release rate [W/m³].
-
-            .. math::
-
-                \dot{q} = -(r_f - r_b) \cdot \Delta H_{rxn}(T)
-
-            Positive values indicate exothermic release; negative values indicate
-            endothermic absorption.
-
-            Parameters
-            ----------
-            T : array-like
-                Temperature field [K].
-            rates : tuple[np.ndarray, np.ndarray]
-                ``(rateForward, rateBackward)`` from :meth:`reactionRate`.
-            rel_tol : float, optional
-                Default is ``1e-5``.
-            abs_tol : float, optional
-                Default is ``1e-12``.
-
-            Returns
-            -------
-            np.ndarray
-                Volumetric heat source [W/m³], shape ``(N,)``.
-
-        reactionHeatSourceDerivative(T, rates, rel_tol=1e-4, abs_tol=1e-9)
-            Compute the analytical Jacobian dQ/dT [W/(m³·K)] for implicit
-            energy equation linearization.
-
-            Accounts for both Arrhenius temperature sensitivity and the Kirchhoff
-            correction from the temperature-dependent reaction enthalpy:
-
-            .. math::
-
-                \frac{dQ}{dT} = -(\dot{r}_f' - \dot{r}_b') \Delta H_{rxn}
-                                - (r_f - r_b) \Delta c_p
-
-            where primes denote d/dT and
-            ``delta_cp = sum(nu_i * cp_i(T))``.
-
-            Parameters
-            ----------
-            T : array-like
-                Temperature field [K], clipped to a minimum of 1e-3.
-            rates : tuple[np.ndarray, np.ndarray]
-                ``(rateForward, rateBackward)`` from :meth:`reactionRate`.
-            rel_tol : float, optional
-                Default is ``1e-4``.
-            abs_tol : float, optional
-                Default is ``1e-9``.
-
-            Returns
-            -------
-            np.ndarray
-                dQ/dT [W/(m³·K)], shape ``(N,)``. Near-equilibrium cells are zero.
-
-        rateDerivativeConcentration(T, C, j)
-            Compute the analytical Jacobian of forward and backward rates with respect
-            to the concentration of species ``j``. Used to build the species Jacobian
-            for implicit coupled solvers.
-
-            .. math::
-
-                \frac{\partial r_f}{\partial C_j} = k_f \cdot \alpha_j
-                    \cdot \frac{\prod C_i^{\alpha_i}}{C_j}
-
-            Parameters
-            ----------
-            T : array-like
-                Temperature field [K].
-            C : array-like
-                Species concentration field [mol/m³], shape ``(n, N)``.
-            j : int
-                Species index with respect to which the derivative is taken.
-
-            Returns
-            -------
-            tuple[np.ndarray, np.ndarray]
-                ``(dRf_dCj, dRb_dCj)``, each shape ``(N,)`` [m³/(mol·s)].
-                ``dRb_dCj`` is zero if ``isReversible=False``.
-
-        Notes
-        -----
-        **Equilibrium masking** — :meth:`_equilibriumMask` identifies cells where the
-        net rate is negligible relative to the scale of the individual directional rates:
-
-        .. math::
-
-            |r_f - r_b| \leq \mathrm{rel\_tol} \cdot \max(|r_f|, |r_b|, 1) + \mathrm{abs\_tol}
-
-        This prevents near-cancellation of large opposite-sign terms from generating
-        spurious stiff source contributions during implicit solver iterations.
-
-        **Concentration clipping** — all concentrations are clipped to 1e-20 before
-        power-law evaluation to avoid singularities for non-integer exponents at zero
-        concentration.
-
-        **K_p → K_c conversion** — assumes ideal gas behaviour. The factor
-        ``(P_REF / (R*T)) ** delta_nu`` converts the pressure-based equilibrium
-        constant to a concentration-based one. ``K_c`` is additionally clipped to
-        ``[1e-50, inf]`` before inverting to obtain ``k_b``.
-
-        Examples
-        --------
-        Irreversible reaction A → B with constant-cp species:
-
-        >>> A = Specie(name='A', molarMass=0.018, enthalpyFormation=-2.42e5)
-        >>> B = Specie(name='B', molarMass=0.018, enthalpyFormation=-2.86e5)
-        >>> rxn = Reaction(
-        ...     name='A -> B',
-        ...     stochiometricCoefficients=np.array([-1.0, 1.0]),
-        ...     speciesExponent=np.array([1.0, 0.0]),
-        ...     reversedSpecieExponent=np.array([0.0, 1.0]),
-        ...     isReversible=False,
-        ...     ahrreniusPreExponent=1e8,
-        ...     ahrreniusActivationEnergy=50e3,
-        ...     species=[A, B],
-        ... )
-        >>> T = np.array([500.0, 1000.0, 1500.0])
-        >>> C = np.array([[1.0, 0.5, 0.2],   # [A]
-        ...               [0.0, 0.1, 0.3]])   # [B]
-        >>> rf, rb = rxn.reactionRate(T, C)
-        >>> q = rxn.reactionHeatSource(T, (rf, rb))
-        >>> mdot = rxn.reactionMassSource((rf, rb))  # shape (2, 3)
-    """
-
     name: str
     stochiometricCoefficients   : np.ndarray    = field(default_factory=lambda: np.array([]))
     speciesExponent             : np.ndarray    = field(default_factory=lambda: np.array([])) 
@@ -719,126 +304,6 @@ class Reaction:
 @dataclass
 class Mixture:
 
-    """
-    Represents a multi-species gas mixture and provides thermophysical property
-    evaluations over distributed field arrays.
-
-    The mixture composition is described by mass fractions ``Y_i`` on a per-cell
-    basis, enabling vectorized evaluation of density, molar mass, and heat capacity
-    across the entire computational domain in a single NumPy call.
-
-    Parameters
-    ----------
-    densityModel : str, optional
-        Model used for density evaluation. Accepted values:
-            - ``'ideal-incompressible-gas'`` : Density from the ideal gas law at
-              reference pressure ``P_REF`` (default).
-            - ``'const'``                    : Constant density equal to ``densityValue``.
-        Default is ``'ideal-incompressible-gas'``.
-    densityValue : float, optional
-        Constant density [kg/m³], used only when ``densityModel='const'``.
-        Default is ``1.2225``.
-    species : list[Specie], optional
-        Ordered list of :class:`Specie` instances forming the mixture.
-        Order must be consistent with all ``speciesFractions`` arrays passed
-        to the methods of this class. Excluded from ``repr``. Default is an empty list.
-
-    Attributes
-    ----------
-    molarMasses : np.ndarray
-        Array of species molar masses [kg/mol], shape ``(n_species,)``,
-        assembled from ``species`` in ``__post_init__``.
-
-    Methods
-    -------
-    equivalentMolarMass(speciesFractions)
-        Compute the mixture molar mass from species mass fractions using the
-        harmonic mean:
-
-        .. math::
-
-            M_{mix} = \left(\sum_i \frac{Y_i}{M_i}\right)^{-1}
-
-        The inverse sum is clipped to ``1e-16`` to prevent division by zero
-        in cells with near-zero or unphysical mass fractions.
-
-        Parameters
-        ----------
-        speciesFractions : array-like
-            Mass fractions ``Y_i``, shape ``(n_species, n_cells)``.
-            Rows must be ordered consistently with ``self.species``.
-
-        Returns
-        -------
-        np.ndarray
-            Mixture molar mass [kg/mol], shape ``(n_cells,)``.
-
-    idealGasDensity(T, speciesFractions)
-        Compute the mixture density from the ideal gas law at reference pressure:
-
-        .. math::
-
-            \rho = \frac{P_{ref} \cdot M_{mix}(Y_i)}{R \cdot T}
-
-        Parameters
-        ----------
-        T : array-like
-            Temperature field [K], shape ``(n_cells,)``.
-        speciesFractions : array-like
-            Mass fractions ``Y_i``, shape ``(n_species, n_cells)``.
-
-        Returns
-        -------
-        np.ndarray
-            Mixture density [kg/m³], shape ``(n_cells,)``.
-
-    mixtureHeatCapacity(T, speciesFractions)
-        Compute the mass-weighted mixture specific heat capacity [J/(kg·K)]:
-
-        .. math::
-
-            c_{p,mix} = \sum_i Y_i \cdot \frac{c_{p,i}(T)}{M_i}
-
-        Each species heat capacity is evaluated via :meth:`Specie.heatCapacity`
-        and normalized by molar mass to convert from [J/(mol·K)] to [J/(kg·K)].
-
-        Parameters
-        ----------
-        T : array-like
-            Temperature field [K], shape ``(n_cells,)``.
-        speciesFractions : array-like
-            Mass fractions ``Y_i``, shape ``(n_species, n_cells)``.
-
-        Returns
-        -------
-        np.ndarray
-            Mixture heat capacity [J/(kg·K)], shape ``(n_cells,)``.
-
-    Notes
-    -----
-    The ``'ideal-incompressible-gas'`` model computes density at constant
-    reference pressure ``P_REF`` — this is suitable for low-Mach-number
-    reacting flow solvers where pressure variations are small relative to the
-    thermodynamic pressure. It is *not* appropriate for compressible or
-    high-Mach-number flows.
-
-    The ``densityModel`` field is stored but its branching logic (i.e., switching
-    between ``'const'`` and ``'ideal-incompressible-gas'``) must be implemented
-    at the solver level. No internal dispatch is currently performed by this class.
-
-    Examples
-    --------
-    >>> H2O = Specie(name='H2O', molarMass=0.018)
-    >>> N2  = Specie(name='N2',  molarMass=0.028)
-    >>> mix = Mixture(species=[H2O, N2])
-    >>> Y   = np.array([[0.1, 0.2],   # Y_H2O at two cells
-    ...                 [0.9, 0.8]])   # Y_N2
-    >>> T   = np.array([800.0, 1000.0])
-    >>> mix.equivalentMolarMass(Y)
-    array([0.02561..., 0.02432...])
-    >>> mix.idealGasDensity(T, Y)
-    array([0.384..., 0.295...])
-    """
     densityModel    : str           = "ideal-incompressible-gas"   # or "const"
     densityValue    : float         = 1.2225                       # used explicitly if densityModel == "const"
     species         : List          = field(default_factory=list, repr=False)
@@ -895,106 +360,13 @@ class Mixture:
 
 @dataclass
 class domainSetup:
-    """
-    Holds geometric parameters describing the computational domain.
 
-    Currently encodes a single cylindrical (pipe/reactor) domain defined by its
-    diameter. Inlet mass fractions can optionally be stored here as a reference
-    composition for domain initialization.
-
-    Parameters
-    ----------
-    diameter : float
-        Inner diameter of the domain [m]. Used to compute the cross-sectional
-        area for inlet mass flow rate calculations.
-    inletMassFractions : np.ndarray, optional
-        Reference inlet mass fractions ``Y_i`` [-], shape ``(n_species,)``.
-        Default is an empty array.
-
-    Notes
-    -----
-    The cross-sectional area of a circular duct is computed as:
-
-    .. math::
-
-        A = \frac{\pi d^2}{4}
-
-    This class is intended as a lightweight configuration container.
-    No validation of ``inletMassFractions`` consistency with the active
-    :class:`Mixture` is performed here.
-    """
     diameter: float
     inletMassFractions : np.ndarray = field(default_factory=lambda: np.array([])) 
 
 @dataclass
 class Inlet:
-    """
-    Defines the boundary condition at the domain inlet.
 
-    Computes the primitive inlet variables — mass flow rate, temperature,
-    and species composition — in the form expected by the solver's boundary
-    condition assembly, given a :class:`Mixture` and a :class:`domainSetup`.
-
-    Parameters
-    ----------
-    position : int, optional
-        Cell or face index identifying the inlet location in the mesh.
-        Default is ``0``.
-    velocity : float, optional
-        Bulk inlet velocity [m/s]. Default is ``50.0``.
-    temperature : float, optional
-        Inlet temperature [K]. Default is ``700.0``.
-    speciesMassFractions : list[float], optional
-        Ordered list of species mass fractions ``Y_i`` [-] at the inlet.
-        Must be consistent with the species ordering of the :class:`Mixture`
-        passed to :meth:`inletValues`. Default is an empty list.
-
-    Methods
-    -------
-    inletValues(mixture, domain)
-        Compute the inlet boundary conditions from the prescribed primitive variables.
-
-        The inlet density is evaluated from the ideal gas law via
-        :meth:`Mixture.idealGasDensity`. The mass flow rate follows from:
-
-        .. math::
-
-            \dot{m} = \rho \cdot A \cdot u, \quad A = \frac{\pi d^2}{4}
-
-        Parameters
-        ----------
-        mixture : Mixture
-            The active mixture object used to evaluate inlet density.
-        domain : domainSetup
-            Domain geometry providing the duct diameter for area calculation.
-
-        Returns
-        -------
-        massFlowrate : float
-            Inlet mass flow rate [kg/s].
-        temperatureBC : float
-            Inlet temperature boundary condition [K].
-        specieFrac : np.ndarray
-            Inlet species mass fractions [-], shape ``(n_species,)``.
-
-    Notes
-    -----
-    The density used for mass flow rate calculation is evaluated at the single
-    inlet temperature and composition, treating the inlet as a uniform plug-flow
-    boundary. Spatial non-uniformities (e.g., radial profiles) are not supported
-    by this class.
-
-    Examples
-    --------
-    >>> mix = Mixture(species=[H2O, N2])
-    >>> domain = domainSetup(diameter=0.05)
-    >>> inlet = Inlet(
-    ...     velocity=30.0,
-    ...     temperature=800.0,
-    ...     speciesMassFractions=[0.15, 0.85],
-    ... )
-    >>> mdot, T_bc, Y_bc = inlet.inletValues(mix, domain)
-    """
     position    : int = 0
     velocity    : float = 50.0
     temperature : float = 700.0
@@ -1038,26 +410,7 @@ class Inlet:
 
 @dataclass
 class Outlet:
-    """
-    Stores outlet state extracted from the last cell of the solved domain.
 
-    Parameters
-    ----------
-    position : int, optional
-        Outlet cell index. Default is -1, i.e. the last cell.
-    temperature : float, optional
-        Outlet temperature [K].
-    speciesMassFractions : np.ndarray, optional
-        Outlet species mass fractions [-], shape (nspecies,).
-    density : float, optional
-        Outlet density [kg/m^3].
-    velocity : float, optional
-        Outlet velocity [m/s].
-    massFlowrate : float, optional
-        Outlet mass flow rate [kg/s].
-    concentrations : np.ndarray, optional
-        Outlet molar concentrations [mol/m^3], shape (nspecies,).
-    """
 
     position: int = -1
     temperature: float = 0.0
@@ -1165,104 +518,7 @@ class Outlet:
 
 @dataclass
 class Zone:
-    """
-    Represents a single spatial zone (control volume segment) in the
-    computational domain.
 
-    Each zone is automatically assigned a unique integer ID upon instantiation
-    via a class-level counter. Zones can act as sources of heat and/or species
-    mass, controlled through the assignment methods.
-
-    Class Variables
-    ---------------
-    counter : int
-        Class-level counter used to assign unique IDs to each zone instance.
-
-    Parameters
-    ----------
-    length : float, optional
-        Physical length of the zone along the axial domain direction [m].
-        Default is ``0.005``.
-    zoneType : str, optional
-        Zone type label (e.g., ``'fluid'``, ``'wall'``, ``'reaction'``).
-        Used for zone classification at the solver level. Default is ``'null'``.
-
-    Attributes
-    ----------
-    id : int
-        Unique integer identifier, assigned automatically in ``__post_init__``.
-    heatSource : bool
-        Flag indicating whether this zone contributes a heat source term
-        to the energy equation. Set via :meth:`zoneAssign` or
-        :meth:`zoneAssignHeating`. Default is ``False``.
-    massSource : bool
-        Flag indicating whether this zone contributes species mass source
-        terms (i.e., chemical reactions are active). Set via :meth:`zoneAssign`.
-        Default is ``False``.
-    heatSourceValue : float
-        Prescribed heat input for this zone [W] (total power) or [W/m³]
-        (volumetric heat generation rate), depending on the calling context.
-        Set via :meth:`zoneAssignHeating`. Default is ``0.0``.
-
-    Methods
-    -------
-    zoneAssign(heating=False, reaction=True)
-        Configure whether this zone has active heat and/or mass source terms.
-
-        Parameters
-        ----------
-        heating : bool, optional
-            If ``True``, enables the heat source flag (``heatSource=True``).
-            Default is ``False``.
-        reaction : bool, optional
-            If ``True``, enables the mass source flag (``massSource=True``),
-            activating chemical reaction source terms in this zone.
-            Default is ``True``.
-
-    zoneAssignHeating(heatValue)
-        Assign a prescribed heat source magnitude to this zone and enable
-        the heat source flag.
-
-        Two interpretations depending on the solver configuration:
-
-        - **Case A** — volumetric heat generation rate [W/m³], applied
-          uniformly across the zone volume.
-        - **Case B** — total heat power [W], integrated over the zone
-          and distributed by the solver.
-
-        Parameters
-        ----------
-        heatValue : float
-            Heat source magnitude [W] or [W/m³]. Sets ``heatSourceValue``
-            and activates ``heatSource=True``.
-
-    Notes
-    -----
-    The ``type`` attribute shadows the Python built-in ``type``. Within
-    ``__post_init__``, ``type(self).counter`` uses the built-in explicitly
-    to access the class — this works correctly but requires care if ``type``
-    is ever used in subclass logic.
-
-    Zone IDs start from ``1`` (the counter is incremented before assignment).
-    To reset the counter between simulation setups (e.g., in unit tests),
-    call ``Zone.counter = 0`` manually before instantiating new zones.
-
-    Examples
-    --------
-    A reaction-active zone with external heating:
-
-    >>> z = Zone(length=0.01, type='fluid')
-    >>> z.zoneAssign(heating=False, reaction=True)
-    >>> z.massSource
-    True
-
-    A purely heated zone with no reaction (electric heater segment):
-
-    >>> z_heat = Zone(length=0.005, type='heater')
-    >>> z_heat.zoneAssignHeating(500.0)   # 500 W total power
-    >>> z_heat.heatSource, z_heat.heatSourceValue
-    (True, 500.0)
-    """
     counter: ClassVar[int] = 0
     length: float = 0.005
     zoneType: str = "null"
@@ -1292,139 +548,7 @@ class Zone:
         return zone
 
 class Mesh:
-    """
-    Constructs a one-dimensional finite volume mesh from an ordered list of
-    :class:`Zone` objects.
 
-    Each zone is discretized into uniform cells of approximately ``sizing``
-    length. The number of cells per zone is rounded to the nearest integer
-    (minimum 1), and the actual cell size is adjusted to exactly fill the
-    zone length. All cell-level arrays are contiguous and zone-ordered,
-    making them directly addressable by the solver's field arrays.
-
-    Parameters
-    ----------
-    domain : domainSetup
-        Domain geometry object providing the duct diameter, used to compute
-        the cross-sectional area for cell volume calculation.
-    zoneList : list[Zone]
-        Ordered list of :class:`Zone` instances defining the spatial
-        decomposition of the domain. Zones with ``length <= 0.0`` are
-        silently excluded during :meth:`meshCreate`.
-    sizing : float, optional
-        Target cell size [m] used to determine the number of cells per zone:
-
-        .. math::
-
-            n_{cells,z} = \max\!\left(1,\ \mathrm{round}\!\left(
-            \frac{L_z}{\Delta x_{target}}\right)\right)
-
-        The actual cell size is ``dz = L_z / n_cells_z``, which may differ
-        slightly from ``sizing`` due to rounding. Default is ``0.005``.
-
-    Attributes
-    ----------
-    sizing : float
-        Target cell size [m] as provided at construction.
-    domain : domainSetup
-        Reference to the domain geometry object.
-    meshZones : list[Zone]
-        The full zone list as provided (including zero-length zones).
-    cell_centers : np.ndarray
-        Axial position of each cell centre [m], shape ``(n_cells,)``.
-        Computed as ``z_start + (k + 0.5) * dz`` for cell index ``k``
-        within a zone starting at ``z_start``.
-    cell_sizes : np.ndarray
-        Axial cell width ``dz`` [m], shape ``(n_cells,)``. Uniform within
-        each zone, but may differ between zones.
-    cell_volumes : np.ndarray
-        Cell volume [m³], shape ``(n_cells,)``. Computed as:
-
-        .. math::
-
-            V_{cell} = \Delta z \cdot A, \quad A = \frac{\pi d^2}{4}
-
-    cell_zone_id : np.ndarray of int
-        Zone ID (from :attr:`Zone.id`) for each cell, shape ``(n_cells,)``.
-    cell_zone_type : np.ndarray of object
-        Zone type string (from :attr:`Zone.zoneType`) for each cell,
-        shape ``(n_cells,)``.
-    cell_heat_flag : np.ndarray of bool
-        Per-cell flag indicating whether a heat source term is active,
-        shape ``(n_cells,)``. Mirrors :attr:`Zone.heatSource`.
-    cell_mass_flag : np.ndarray of bool
-        Per-cell flag indicating whether reaction mass source terms are
-        active, shape ``(n_cells,)``. Mirrors :attr:`Zone.massSource`.
-    cell_heat_value : np.ndarray of float
-        Prescribed heat source magnitude [W] or [W/m³] for each cell,
-        shape ``(n_cells,)``. Mirrors :attr:`Zone.heatSourceValue`.
-    n_cells : int
-        Total number of cells in the mesh. Set to ``0`` if all zones have
-        zero length.
-    length : float
-        Total axial length of the mesh [m], equal to the sum of all
-        active zone lengths.
-
-    Methods
-    -------
-    meshCreate()
-        Discretize all active zones and populate the cell-level arrays.
-
-        Zones with ``length <= 0.0`` are excluded. If no active zones
-        remain, all arrays are set to empty and ``n_cells = 0``.
-
-        The discretization proceeds zone by zone in order:
-
-        1. Compute ``n_cells_z = max(1, round(L_z / sizing))`` per zone.
-        2. Compute the exact cell size ``dz = L_z / n_cells_z``.
-        3. Compute cell centres as ``z0 + (k + 0.5) * dz`` for
-           ``k = 0, ..., n_cells_z - 1``, where ``z0`` is the cumulative
-           zone start position.
-        4. Broadcast all zone-level scalar properties (ID, type, flags,
-           heat value) uniformly across the zone's cells.
-
-        Must be called explicitly after construction before accessing any
-        cell-level attributes.
-
-    Notes
-    -----
-    **Uniform spacing within zones** — each zone uses a single cell size
-    ``dz = L_z / n_cells_z``. Non-uniform or graded meshes (e.g., wall
-    refinement) are not supported by this class.
-
-    **Cell volume assumes a circular cross-section** — the area is computed
-    as ``pi * d^2 / 4`` from ``domain.diameter``. For non-circular ducts,
-    the area calculation must be overridden at the solver level.
-
-    **`cell_heat_value` units** — the value is copied verbatim from
-    :attr:`Zone.heatSourceValue`, which can represent either a total power
-    [W] or a volumetric rate [W/m³] depending on how the zone was configured
-    (see :meth:`Zone.zoneAssignHeating`). The solver is responsible for
-    dividing by ``cell_volumes`` if total power is used.
-
-    **Zero-length zones** — zones with ``length <= 0.0`` are silently
-    skipped in :meth:`meshCreate` but remain in :attr:`meshZones`. This
-    allows zones to be conditionally disabled without removing them from
-    the configuration list.
-
-    Examples
-    --------
-    >>> z1 = Zone(length=0.05, zoneType='fluid')
-    >>> z1.zoneAssign(heating=False, reaction=True)
-    >>> z2 = Zone(length=0.02, zoneType='heater')
-    >>> z2.zoneAssignHeating(1000.0)
-    >>>
-    >>> domain = domainSetup(diameter=0.05)
-    >>> mesh = Mesh(domain=domain, zoneList=[z1, z2], sizing=0.005)
-    >>> mesh.meshCreate()
-    >>>
-    >>> mesh.n_cells         # 50 + 20 = 70 cells (at 0.005 m each)
-    14
-    >>> mesh.cell_centers[:3]
-    array([0.0025, 0.0075, 0.0125])
-    >>> mesh.cell_heat_flag[-1]
-    True
-    """
     def __init__(self, domain: domainSetup, zoneList: List[Zone], sizing: float = 0.005):
         self.sizing     = sizing
         self.domain     = domain
@@ -1508,94 +632,7 @@ class Mesh:
         return mesh
 
 class scalarField:
-    """
-    Represents a scalar field variable defined over the cells of a
-    :class:`Mesh`.
 
-    A thin wrapper that associates a named physical quantity with a
-    1D NumPy array aligned to the mesh cell layout. Intended to be used
-    for species mass fractions, temperature, pressure, or any other
-    cell-centred scalar transported by the solver.
-
-    Parameters
-    ----------
-    variable : str
-        Name of the physical quantity represented by this field
-        (e.g., ``'T'``, ``'p'``, ``'Y_H2O'``). Used for identification
-        and post-processing labelling.
-    field_type : str, optional
-        Semantic category of the field. Accepted values (convention,
-        not enforced):
-            - ``'specie'``      : Species mass fraction field (default).
-            - ``'temperature'`` : Temperature field.
-            - ``'pressure'``    : Pressure field.
-        Default is ``'specie'``.
-
-    Attributes
-    ----------
-    variable : str
-        Field name as provided at construction.
-    field_type : str
-        Field type label as provided at construction.
-    cellField : np.ndarray or None
-        Cell-centred scalar values, shape ``(n_cells,)``, aligned with
-        :attr:`Mesh.cell_centers`. Initialized to ``None`` at construction;
-        set to a zero array by :meth:`fieldInitialize`.
-
-    Methods
-    -------
-    fieldInitialize(mesh)
-        Allocate and zero-initialize the cell field array.
-
-        Creates a zero-filled array with the same shape and dtype as
-        ``mesh.cell_centers`` (``float64``), and assigns it to
-        ``self.cellField``.
-
-        Parameters
-        ----------
-        mesh : Mesh
-            The active mesh object. The field length is inferred from
-            ``mesh.cell_centers``.
-
-        Notes
-        -----
-        Any previously stored values in ``cellField`` are overwritten.
-        Re-calling this method resets the field to zero, which can be
-        used to reinitialize between solver restarts or parametric runs.
-
-    Notes
-    -----
-    The class name uses ``camelCase`` rather than the Python convention
-    of ``PascalCase`` for classes (``ScalarField``). Renaming is advisable
-    for consistency with the rest of the codebase.
-
-    ``cellField`` is ``None`` until :meth:`fieldInitialize` is called.
-    Any solver code accessing ``cellField`` before initialization will
-    encounter ``None`` rather than an array, which may produce silent
-    errors in downstream NumPy operations. A guard check is advisable:
-
-    .. code-block:: python
-
-        if self.cellField is None:
-            raise RuntimeError(
-                f"Field '{self.variable}' has not been initialized. "
-                "Call fieldInitialize(mesh) first."
-            )
-
-    Examples
-    --------
-    >>> mesh = Mesh(domain=domain, zoneList=[z1, z2], sizing=0.005)
-    >>> mesh.meshCreate()
-    >>>
-    >>> T_field = scalarField(variable='T', field_type='temperature')
-    >>> T_field.fieldInitialize(mesh)
-    >>> T_field.cellField
-    array([0., 0., 0., ..., 0.])
-    >>>
-    >>> Y_H2O = scalarField(variable='Y_H2O', field_type='specie')
-    >>> Y_H2O.fieldInitialize(mesh)
-    >>> Y_H2O.cellField[:] = 0.1   # uniform initial condition
-    """
     def __init__(self, variable: str, field_type: str = "specie"):
         self.variable   = variable
         self.field_type = field_type
@@ -1605,340 +642,18 @@ class scalarField:
         self.cellField  = np.zeros_like(mesh.cell_centers)
 
 class solver:
-    """
-    Finite volume solver for steady-state 1D reacting flow in a duct.
+ 
 
-    Solves the coupled species mass fraction and energy (temperature) transport
-    equations on a :class:`Mesh` with a single :class:`Reaction`, using a
-    sequential (segregated) iterative algorithm. Convection is treated with a
-    first-order upwind scheme. Source terms from chemical reactions are linearized
-    and under-relaxed for stability.
+    def __init__(self, mesh, mixture, reactions: List["Reaction"], specieFields: List, inlet):
+        self.mesh = mesh
+        self.mixture = mixture
 
-    The governing equations per cell ``i`` (index increasing downstream) are:
-
-    **Species** (mass fraction ``Y_k``):
-
-    .. math::
-
-        \dot{m} Y_{k,i} - \dot{m} Y_{k,i-1} = \dot{\omega}_{k,i} V_i
-
-    **Energy** (temperature ``T``):
-
-    .. math::
-
-        \dot{m} c_{p,i} T_i - \dot{m} c_{p,i-1} T_{i-1} = \dot{Q}_i V_i
-
-    where :math:`\dot{m}` is the inlet mass flow rate [kg/s], :math:`V_i` is
-    the cell volume [m³], :math:`\dot{\omega}_{k,i}` is the species mass source
-    [kg/(m³·s)], and :math:`\dot{Q}_i` is the volumetric heat source [W/m³].
-
-    Parameters
-    ----------
-    mesh : Mesh
-        Discretized domain providing cell geometry, zone flags, and heat values.
-    mixture : Mixture
-        Mixture object providing density and heat capacity evaluations.
-    reaction : Reaction
-        Single reaction object providing rate constants, source terms,
-        and their analytical Jacobians.
-    specieFields : list[scalarField]
-        Ordered list of initialized :class:`scalarField` instances, one per
-        species. Order must match ``mixture.species`` and ``reaction.species``.
-        Their ``cellField`` arrays are stacked into a ``(n_species, n_cells)``
-        matrix at construction.
-    inlet : Inlet
-        Inlet boundary condition object providing mass flow rate, temperature,
-        and species mass fractions.
-
-    Attributes
-    ----------
-    mesh : Mesh
-        Reference to the active mesh.
-    mixture : Mixture
-        Reference to the mixture object.
-    reaction : Reaction
-        Reference to the reaction object.
-    inlet : Inlet
-        Reference to the inlet boundary object.
-    massFlux : float
-        Inlet mass flow rate [kg/s], computed once from ``inlet.inletValues``
-        at construction and held constant throughout the simulation.
-    specieFields : np.ndarray
-        Species mass fraction field, shape ``(n_species, n_cells)``.
-        Assembled by vertically stacking the ``cellField`` arrays from the
-        input ``specieFields`` list.
-    temperatureField : scalarField
-        Temperature field [K], initialized uniformly to ``inlet.temperature``.
-    velocityField : scalarField
-        Axial velocity field [m/s], initialized uniformly to ``inlet.velocity``.
-        Updated each iteration from ``massFlux / (density * area)``.
-    density : np.ndarray
-        Mixture density field [kg/m³], shape ``(n_cells,)``. Updated via
-        :meth:`update_density` after each composition or temperature change.
-    massSources : np.ndarray
-        Per-species volumetric mass source [kg/(m³·s)], shape ``(n_species, n_cells)``.
-        Populated by :meth:`sourcesEvaluation`.
-    massSourcesDerivative : np.ndarray
-        Linearization coefficient ``dω_k/dY_k`` [kg/(m³·s)] per species per cell,
-        shape ``(n_species, n_cells)``. Used for implicit source linearization.
-    heatSources : np.ndarray
-        Total volumetric heat source [W/m³], shape ``(n_cells,)``. Sum of
-        prescribed zone heating and reaction heat release.
-    heatSourcesDerivative : np.ndarray
-        Linearization coefficient ``dQ/dT`` [W/(m³·K)], shape ``(n_cells,)``.
-        Used for implicit energy equation linearization.
-    heatReactionSources : np.ndarray
-        Reaction-only contribution to ``heatSources`` [W/m³], shape ``(n_cells,)``.
-        Stored separately to enable independent under-relaxation.
-    heatReactionSourcesDerivative : np.ndarray
-        Reaction-only contribution to ``heatSourcesDerivative`` [W/(m³·K)],
-        shape ``(n_cells,)``.
-    heatResidual : np.ndarray
-        Energy equation residual vector [W], shape ``(n_cells,)``.
-        Computed by :meth:`heatEquation`.
-    specieResidual : np.ndarray
-        Species equation residual matrix [kg/s], shape ``(n_species, n_cells)``.
-        Computed by :meth:`specieScalarEquation`.
-    reactionRates : np.ndarray
-        Forward and backward reaction rates [mol/(m³·s)], shape ``(2, n_cells)``.
-        Row 0 is forward; row 1 is backward. Updated by :meth:`sourcesEvaluation`.
-
-    Methods
-    -------
-    concentrationArray()
-        Compute molar concentrations from current density and mass fractions:
-
-        .. math::
-
-            C_k = \frac{\rho \cdot Y_k}{M_k} \quad \text{[mol/m³]}
-
-        Returns
-        -------
-        np.ndarray
-            Concentration array [mol/m³], shape ``(n_species, n_cells)``.
-
-        Raises
-        ------
-        ValueError
-            If ``specieFields`` is not 2D, or if species/cell counts are
-            inconsistent with ``mixture.molarMasses`` or ``density``.
-
-    update_density()
-        Recompute ``self.density`` from the current temperature and species
-        fields via :meth:`Mixture.idealGasDensity`. Must be called after any
-        update to ``temperatureField`` or ``specieFields``.
-
-    sourcesEvaluation(underRelaxationFactorHeatSource=0.05, underRelaxationFactorMassSource=0.15, eq_rel_tol=1e-2, eq_abs_tol=1e-4)
-        Evaluate and under-relax all reaction source terms for the current
-        iteration.
-
-        Procedure:
-
-        1. Compute molar concentrations via :meth:`concentrationArray`.
-        2. Evaluate forward and backward reaction rates via
-           :meth:`Reaction.reactionRate`.
-        3. Identify near-equilibrium cells using the tolerance mask
-           (see :class:`Reaction` Notes). Cells outside reaction zones
-           (``cell_mass_flag=False``) are also masked out.
-        4. Compute species mass sources :math:`\dot{\omega}_k` and their
-           Jacobians :math:`d\dot{\omega}_k/dY_k` via
-           :meth:`Reaction.reactionMassSource` and
-           :meth:`Reaction.rateDerivativeConcentration`, applying the
-           chain rule :math:`dC_k/dY_k = \rho / M_k`.
-        5. Compute reaction heat source :math:`\dot{Q}_{rxn}` and its
-           Jacobian :math:`dQ/dT` via :meth:`Reaction.reactionHeatSource`
-           and :meth:`Reaction.reactionHeatSourceDerivative`.
-        6. Add prescribed zone heat values to ``heatSources`` where
-           ``cell_heat_flag=True``.
-        7. Apply under-relaxation to reaction sources:
-
-           .. math::
-
-               S^{new} = (1 - \omega) S^{old} + \omega S^{eval}
-
-        Parameters
-        ----------
-        underRelaxationFactorHeatSource : float, optional
-            Under-relaxation factor for reaction heat sources and their
-            derivatives. Default is ``0.05``.
-        underRelaxationFactorMassSource : float, optional
-            Under-relaxation factor for species mass sources and their
-            derivatives. Default is ``0.15``.
-        eq_rel_tol : float, optional
-            Relative tolerance for near-equilibrium cell detection.
-            Default is ``1e-2``.
-        eq_abs_tol : float, optional
-            Absolute tolerance for near-equilibrium cell detection.
-            Default is ``1e-4``.
-
-    matrixSpecieEquationAssembly(specieIndex)
-        Assemble the linear system ``A Y_k = b`` for species ``k`` using
-        first-order upwind convection with implicit source linearization.
-
-        The source term is split as:
-
-        .. math::
-
-            S = S_U + S_P \cdot Y_k, \quad S_P = \min(dS/dY_k,\ 0)
-
-        ``S_P`` is always non-positive (deferred to the matrix diagonal)
-        to preserve diagonal dominance. ``S_U`` is treated explicitly on
-        the right-hand side.
-
-        Parameters
-        ----------
-        specieIndex : int
-            Index of the species to assemble (row index into ``specieFields``).
-
-        Returns
-        -------
-        A : np.ndarray
-            System matrix, shape ``(n_cells, n_cells)``.
-        b : np.ndarray
-            Right-hand side vector, shape ``(n_cells,)``.
-
-    matrixTemperatureEquationAssembly()
-        Assemble the linear system ``A T = b`` for the energy equation using
-        first-order upwind convection and implicit heat source linearization.
-
-        The heat source is split analogously to the species equation:
-
-        .. math::
-
-            Q = S_U + S_P \cdot T, \quad S_P = \min(dQ/dT,\ 0)
-
-        The cell heat capacity ``cp_mix`` is evaluated at the current
-        temperature and composition, then frozen for the linear solve.
-
-        Returns
-        -------
-        A : np.ndarray
-            System matrix, shape ``(n_cells, n_cells)``.
-        b : np.ndarray
-            Right-hand side vector, shape ``(n_cells,)``.
-
-    specieScalarEquation()
-        Evaluate the species equation residual for the current field state
-        and store it in ``self.specieResidual``. Used for monitoring
-        convergence without assembling the full matrix.
-
-    heatEquation()
-        Evaluate the energy equation residual for the current field state
-        and store it in ``self.heatResidual``. Used for convergence monitoring.
-
-    initializeCase()
-        Set all field arrays to the inlet boundary values and recompute density.
-
-        Assigns ``inlet.speciesMassFractions`` uniformly across all cells and
-        sets the temperature field to ``inlet.temperature``. Intended to be
-        called once before :meth:`steadyState` to establish a physically
-        consistent initial condition.
-
-    steadyState(max_iter, relaxationFactorSpecie, relaxationFactorTemperature, convergenceCriteria)
-        Run the segregated iterative solver to steady state.
-
-        Each iteration proceeds as:
-
-        1. Solve species equations sequentially for each species index.
-        2. Clip species fields to ``[0, 1]`` and re-normalize to enforce
-           :math:`\sum_k Y_k = 1`.
-        3. Update density and velocity.
-        4. Evaluate source terms via :meth:`sourcesEvaluation`.
-        5. Solve the energy equation.
-        6. Clip temperature to ``[200, 2000]`` K.
-        7. Apply under-relaxation to both species and temperature:
-
-           .. math::
-
-               \phi^{n+1} = \phi^n + \alpha (\phi^* - \phi^n)
-
-        8. Check convergence using scaled norms:
-
-           .. math::
-
-               \delta Y_{scaled} = \frac{\max|\Delta Y|}{\dot{m}}, \quad
-               \delta T_{scaled} = \frac{\max|\Delta T|}{\bar{T}}
-
-        Prints iteration diagnostics every 10 steps.
-
-        Parameters
-        ----------
-        max_iter : int
-            Maximum number of outer iterations.
-        relaxationFactorSpecie : float
-            Under-relaxation factor ``alpha`` for species fields. Typical
-            range: ``0.3``–``0.8``.
-        relaxationFactorTemperature : float
-            Under-relaxation factor ``alpha`` for the temperature field.
-            Typical range: ``0.2``–``0.5``.
-        convergenceCriteria : float
-            Absolute convergence threshold. Iteration stops when
-            ``max(max|ΔY|, max|ΔT|) < convergenceCriteria``.
-
-        Returns
-        -------
-        np.ndarray
-            Outlet species mass fractions ``Y_k[-1]``, shape ``(n_species,)``.
-
-    Notes
-    -----
-    **Segregated algorithm** — species and temperature equations are solved
-    sequentially rather than simultaneously. This avoids assembling a
-    large coupled block system at the cost of requiring more outer iterations
-    and careful under-relaxation to maintain stability.
-
-    **Mass flux is constant** — ``self.massFlux`` is computed once at
-    construction from the inlet conditions. Density and velocity are updated
-    each iteration, but the mass flow rate is not recomputed. This is
-    consistent with the incompressible-flow assumption at fixed ``P_REF``.
-
-    **Dense matrix solver** — ``scipy.linalg.solve`` is used to solve the
-    tridiagonal systems in :meth:`matrixSpecieEquationAssembly` and
-    :meth:`matrixTemperatureEquationAssembly`. For large meshes (``n_cells``
-    > ~10³), replacing these with ``scipy.sparse.linalg.spsolve`` on CSR
-    matrices would give a significant performance improvement, as the
-    current dense assembly allocates an ``(n_cells, n_cells)`` matrix
-    even though only two diagonals are populated.
-
-    **Source term under-relaxation** — very low default values (``underRelaxationFactorHeatSource=0.05``,
-    ``underRelaxationFactorMassSource=0.15``) indicate that reaction sources are expected to
-    change rapidly between iterations. If convergence is slow, increasing
-    these factors (up to ~0.5) may accelerate the solution once the
-    fields are near equilibrium.
-
-    Examples
-    --------
-    Typical solver setup and execution:
-
-    >>> mesh.meshCreate()
-    >>> Y_H2O = scalarField('Y_H2O', 'specie')
-    >>> Y_N2  = scalarField('Y_N2',  'specie')
-    >>> Y_H2O.fieldInitialize(mesh)
-    >>> Y_N2.fieldInitialize(mesh)
-    >>>
-    >>> slv = solver(
-    ...     mesh=mesh,
-    ...     mixture=mix,
-    ...     reaction=rxn,
-    ...     specieFields=[Y_H2O, Y_N2],
-    ...     inlet=inlet,
-    ... )
-    >>> slv.initializeCase()
-    >>> outlet_Y = slv.steadyState(
-    ...     max_iter=500,
-    ...     relaxationFactorSpecie=0.5,
-    ...     relaxationFactorTemperature=0.3,
-    ...     convergenceCriteria=1e-6,
-    ... )
-    """
-
-    def __init__(self, mesh, mixture, reaction, specieFields: List, inlet):
-        self.mesh       = mesh
-        self.mixture    = mixture
-        self.reaction   = reaction
-        self.inlet      = inlet
-        self.outlet     = Outlet()
-        self.massFlux   = inlet.inletValues(mixture=mixture, domain=self.mesh.domain)[0]
+        if isinstance(reactions, Reaction):
+            reactions = [reactions]
+        self.reactions = reactions
+        self.inlet = inlet
+        self.outlet = Outlet()
+        self.massFlux = inlet.inletValues(mixture=mixture, domain=self.mesh.domain)[0]
         self.specieFields = np.vstack([f.cellField for f in specieFields])
 
         self.temperatureField = scalarField("temperature", "temperature")
@@ -1948,25 +663,25 @@ class solver:
         self.velocityField = scalarField("velocity", "velocity")
         self.velocityField.fieldInitialize(mesh)
         self.velocityField.cellField[:] = self.inlet.velocity
-        
+
         self.density = self.mixture.idealGasDensity(
-            T=self.temperatureField.cellField, 
+            T=self.temperatureField.cellField,
             speciesFractions=self.specieFields
         )
 
         self.heatSourcesDerivative = np.zeros_like(self.temperatureField.cellField)
-        self.massSources = np.zeros_like(self.specieFields)                 # (n_species, n_cells)
+        self.massSources = np.zeros_like(self.specieFields)
         self.massSourcesDerivative = np.zeros_like(self.specieFields)
-        self.heatSources = np.zeros_like(self.temperatureField.cellField)   # (n_cells,)
+        self.heatSources = np.zeros_like(self.temperatureField.cellField)
         self.heatResidual = np.zeros_like(self.temperatureField.cellField)
         self.specieResidual = np.zeros_like(self.specieFields)
 
-        self.reactionRates = np.zeros((2, mesh.n_cells), dtype=float)
+        self.reactionRates = np.zeros((len(self.reactions), 2, mesh.n_cells), dtype=float)
 
     def concentrationArray(self):
-        rho = np.asarray(self.density, dtype=float)              # (n_cells,)
-        Y   = np.asarray(self.specieFields, dtype=float)         # (n_species, n_cells)
-        M   = np.asarray(self.mixture.molarMasses, dtype=float)  # (n_species,)
+        rho = np.asarray(self.density, dtype=float)
+        Y = np.asarray(self.specieFields, dtype=float)
+        M = np.asarray(self.mixture.molarMasses, dtype=float)
 
         if Y.ndim != 2:
             raise ValueError(f"specieFields must be 2D, got shape {Y.shape}")
@@ -1975,8 +690,7 @@ class solver:
         if Y.shape[1] != rho.shape[0]:
             raise ValueError(f"Cell count mismatch: Y has {Y.shape[1]}, rho has {rho.shape[0]}")
 
-        C = rho[np.newaxis, :] * Y / M[:, np.newaxis]
-        return C
+        return rho[np.newaxis, :] * Y / M[:, np.newaxis]
 
     def update_density(self):
         self.density = self.mixture.idealGasDensity(
@@ -2019,45 +733,47 @@ class solver:
 
         self.heatSources[heatMask] += np.asarray(self.mesh.cell_heat_value, dtype=float)[heatMask]
 
-        rateForward, rateBackward = self.reaction.reactionRate(T, C)
-        self.reactionRates[0, :] = rateForward
-        self.reactionRates[1, :] = rateBackward
+        n_species = self.specieFields.shape[0]
 
-        net_rate = rateForward - rateBackward
-        rate_scale = np.maximum(np.maximum(np.abs(rateForward), np.abs(rateBackward)), 1.0)
-        near_eq = np.abs(net_rate) <= (eq_rel_tol * rate_scale + eq_abs_tol)
-        near_eq = near_eq & reactionMask
+        for r_idx, rxn in enumerate(self.reactions):
+            rateForward, rateBackward = rxn.reactionRate(T, C)
+            self.reactionRates[r_idx, 0, :] = rateForward
+            self.reactionRates[r_idx, 1, :] = rateBackward
 
-        # raw chemistry source from stoichiometry, no extra masking inside helper
-        massSources_all = (
-            net_rate[np.newaxis, :]
-            * self.reaction.stochiometricCoefficients[:, np.newaxis]
-            * self.reaction.molarMasses[:, np.newaxis]
-        )
-        massSources_all[:, near_eq] = 0.0
-        self.massSources[:, reactionMask] = massSources_all[:, reactionMask]
+            net_rate = rateForward - rateBackward
+            rate_scale = np.maximum(np.maximum(np.abs(rateForward), np.abs(rateBackward)), 1.0)
+            near_eq = np.abs(net_rate) <= (eq_rel_tol * rate_scale + eq_abs_tol)
+            near_eq = near_eq & reactionMask
 
-        M_species = self.reaction.molarMasses
-        stoich = self.reaction.stochiometricCoefficients
+            massSources_r = (
+                net_rate[np.newaxis, :]
+                * rxn.stochiometricCoefficients[:, np.newaxis]
+                * rxn.molarMasses[:, np.newaxis]
+            )
+            massSources_r[:, near_eq] = 0.0
+            self.massSources[:, reactionMask] += massSources_r[:, reactionMask]
 
-        for k in range(self.specieFields.shape[0]):
-            dRf_dCk, dRb_dCk = self.reaction.rateDerivativeConcentration(T, C, j=k)
-            dOmega_dC = stoich[k] * M_species[k] * (dRf_dCk - dRb_dCk)
-            dOmega_dC[near_eq] = 0.0
+            M_species = rxn.molarMasses
+            stoich = rxn.stochiometricCoefficients
 
-            dCk_dYk = rho / M_species[k]
-            dOmega_dYk = dOmega_dC * dCk_dYk
-            self.massSourcesDerivative[k, reactionMask] = dOmega_dYk[reactionMask]
+            for k in range(n_species):
+                dRf_dCk, dRb_dCk = rxn.rateDerivativeConcentration(T, C, j=k)
+                dOmega_dC = stoich[k] * M_species[k] * (dRf_dCk - dRb_dCk)
+                dOmega_dC[near_eq] = 0.0
 
-        deltaHrxn = self.reaction.enthalpyReactionChange(T)
-        heatReactionSource = -net_rate * deltaHrxn
-        dQ_dT = self.reaction.reactionHeatSourceDerivative(T, (rateForward, rateBackward))
+                dCk_dYk = rho / M_species[k]
+                dOmega_dYk = dOmega_dC * dCk_dYk
+                self.massSourcesDerivative[k, reactionMask] += dOmega_dYk[reactionMask]
 
-        heatReactionSource[near_eq] = 0.0
-        dQ_dT[near_eq] = 0.0
+            deltaHrxn = rxn.enthalpyReactionChange(T)
+            heatReactionSource_r = -net_rate * deltaHrxn
+            dQ_dT_r = rxn.reactionHeatSourceDerivative(T, (rateForward, rateBackward))
 
-        self.heatReactionSources[reactionMask] = heatReactionSource[reactionMask]
-        self.heatReactionSourcesDerivative[reactionMask] = dQ_dT[reactionMask]
+            heatReactionSource_r[near_eq] = 0.0
+            dQ_dT_r[near_eq] = 0.0
+
+            self.heatReactionSources[reactionMask] += heatReactionSource_r[reactionMask]
+            self.heatReactionSourcesDerivative[reactionMask] += dQ_dT_r[reactionMask]
 
         self.heatReactionSources = (
             (1.0 - underRelaxationFactorHeatSource) * heat_rxn_old
@@ -2079,7 +795,6 @@ class solver:
             (1.0 - underRelaxationFactorMassSource) * massd_old
             + underRelaxationFactorMassSource * self.massSourcesDerivative
         )
-
 
     def matrixSpecieEquationAssembly(self, specieIndex: int):
         n = self.mesh.n_cells
@@ -2242,73 +957,12 @@ class solver:
 
         self.outlet = Outlet.fromSolver(self)
         return self.outlet
-class ReactorPlotter:
-    def __init__(self, solver):
-        self.solver = solver
-
-    def get_axis(self):
-        mesh = self.solver.mesh
-        if hasattr(mesh, "cell_centers"):
-            return mesh.cell_centers
-        else:
-            lengths = mesh.cell_lengths
-            z_edges = np.concatenate(([0.0], np.cumsum(lengths)))
-            return 0.5 * (z_edges[:-1] + z_edges[1:])
-
-    def save_temperature(self, path):
-        z = self.get_axis()
-        T = self.solver.temperatureField.cellField
-
-        fig, ax = plt.subplots(figsize=(8, 4))
-        ax.plot(z, T, color="red", lw=2, label="Temperature")
-        ax.set_xlabel("Axial position z [m]")
-        ax.set_ylabel("Temperature [K]")
-        ax.grid(True, alpha=0.3)
-        ax.legend()
-        fig.tight_layout()
-        fig.savefig(path, dpi=200, bbox_inches="tight")
-        plt.close(fig)
-
-    def save_species(self, path):
-        z = self.get_axis()
-        Y = self.solver.specieFields
-
-        fig, ax = plt.subplots(figsize=(8, 4))
-        for i, sp in enumerate(self.solver.reaction.species):
-            ax.plot(z, Y[i, :], lw=2, label=sp.name)
-        ax.set_xlabel("Axial position z [m]")
-        ax.set_ylabel("Mass fraction [-]")
-        ax.grid(True, alpha=0.3)
-        ax.legend()
-        fig.tight_layout()
-        fig.savefig(path, dpi=200, bbox_inches="tight")
-        plt.close(fig)
-
-    def save_all(self, path):
-        z = self.get_axis()
-        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 4), sharex=True)
-
-        ax1.plot(z, self.solver.temperatureField.cellField, color="red", lw=2)
-        ax1.set_xlabel("z [m]")
-        ax1.set_ylabel("T [K]")
-        ax1.grid(True, alpha=0.3)
-
-        for i, sp in enumerate(self.solver.reaction.species):
-            ax2.plot(z, self.solver.specieFields[i, :], lw=2, label=sp.name)
-        ax2.set_xlabel("z [m]")
-        ax2.set_ylabel("Y_i [-]")
-        ax2.grid(True, alpha=0.3)
-        ax2.legend()
-
-        fig.tight_layout()
-        fig.savefig(path, dpi=200, bbox_inches="tight")
-        plt.close(fig)
-        
+    
 def build_reactor_from_context(case_ctx):
     chemistry = case_ctx["chemistry"]
     mesh_cfg = case_ctx["mesh"]
     inlet_cfg = case_ctx["inlet"]
-    
+
     Specie.counter = 0
     Zone.counter = 0
 
@@ -2318,16 +972,28 @@ def build_reactor_from_context(case_ctx):
     ]
 
     reaction_items = list(chemistry["reactions"].items())
-    if len(reaction_items) != 1:
-        raise ValueError("Exactly one reaction is currently supported")
-    reaction_name, reaction_cfg = reaction_items[0]
-    reaction = Reaction.from_dict(reaction_name, reaction_cfg, species)
+    if len(reaction_items) < 1:
+        raise ValueError("At least one reaction must be defined")
+
+    reactions = [
+        Reaction.from_dict(name, cfg, species)
+        for name, cfg in reaction_items
+    ]
+
+    # Guard: every reaction must reference the same species ordering as
+    # the mixture, otherwise summed sources will silently misalign.
+    species_names = [sp.name for sp in species]
+    for rxn in reactions:
+        rxn_names = [sp.name for sp in rxn.species]
+        if rxn_names != species_names:
+            raise ValueError(
+                f"Reaction '{rxn.name}' species ordering {rxn_names} "
+                f"does not match mixture species ordering {species_names}"
+            )
 
     mixture = Mixture.from_dict(chemistry["mixture"], species)
 
-    domain = domainSetup(
-        diameter=float(inlet_cfg["diameter"])
-    )
+    domain = domainSetup(diameter=float(inlet_cfg["diameter"]))
 
     zones = [
         Zone.from_dict(name, cfg)
@@ -2346,9 +1012,165 @@ def build_reactor_from_context(case_ctx):
     slv = solver(
         mesh=mesh,
         mixture=mixture,
-        reaction=reaction,
+        reactions=reactions,
         specieFields=specie_fields,
         inlet=inlet,
     )
 
     return slv, species
+
+class ReactorPlotter:
+
+    def __init__(self, solver):
+        self.solver = solver
+
+    def get_axis(self):
+        mesh = self.solver.mesh
+        if hasattr(mesh, "cell_centers"):
+            return mesh.cell_centers
+        lengths = mesh.cell_lengths
+        z_edges = np.concatenate(([0.0], np.cumsum(lengths)))
+        return 0.5 * (z_edges[:-1] + z_edges[1:])
+
+    def save_temperature(self, path, dpi=200):
+        z = self.get_axis()
+        T = self.solver.temperatureField.cellField
+
+        fig, ax = plt.subplots(figsize=(8, 4))
+        ax.plot(z, T, color="red", lw=2, label="Temperature")
+        ax.set_xlabel("Axial position z [m]")
+        ax.set_ylabel("Temperature [K]")
+        ax.grid(True, alpha=0.3)
+        ax.legend()
+        fig.tight_layout()
+        fig.savefig(path, dpi=dpi, bbox_inches="tight")
+        plt.close(fig)
+
+    def _species_list(self):
+        # Species now live on the mixture, not on a single reaction object,
+        # since the solver supports multiple simultaneous reactions.
+        if hasattr(self.solver, "mixture") and hasattr(self.solver.mixture, "species"):
+            return self.solver.mixture.species
+        if hasattr(self.solver, "reactions") and self.solver.reactions:
+            return self.solver.reactions[0].species
+        if hasattr(self.solver, "reaction"):
+            return self.solver.reaction.species
+        raise AttributeError("Could not determine species list from solver")
+
+    def save_species(self, path, dpi=200):
+        z = self.get_axis()
+        Y = self.solver.specieFields
+        species = self._species_list()
+
+        fig, ax = plt.subplots(figsize=(8, 4))
+        for i, sp in enumerate(species):
+            ax.plot(z, Y[i, :], lw=2, label=sp.name)
+        ax.set_xlabel("Axial position z [m]")
+        ax.set_ylabel("Mass fraction [-]")
+        ax.grid(True, alpha=0.3)
+        ax.legend()
+        fig.tight_layout()
+        fig.savefig(path, dpi=dpi, bbox_inches="tight")
+        plt.close(fig)
+
+    def save_species_subset(self, path, names, dpi=200):
+        z = self.get_axis()
+        Y = self.solver.specieFields
+        species = self._species_list()
+        name_set = {n.lower() for n in names}
+
+        fig, ax = plt.subplots(figsize=(8, 4))
+        for i, sp in enumerate(species):
+            if sp.name.lower() in name_set:
+                ax.plot(z, Y[i, :], lw=2, label=sp.name)
+        ax.set_xlabel("Axial position z [m]")
+        ax.set_ylabel("Mass fraction [-]")
+        ax.grid(True, alpha=0.3)
+        ax.legend()
+        fig.tight_layout()
+        fig.savefig(path, dpi=dpi, bbox_inches="tight")
+        plt.close(fig)
+
+    def save_all(self, path, dpi=200):
+        z = self.get_axis()
+        species = self._species_list()
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 4), sharex=True)
+
+        ax1.plot(z, self.solver.temperatureField.cellField, color="red", lw=2)
+        ax1.set_xlabel("z [m]")
+        ax1.set_ylabel("T [K]")
+        ax1.grid(True, alpha=0.3)
+
+        for i, sp in enumerate(species):
+            ax2.plot(z, self.solver.specieFields[i, :], lw=2, label=sp.name)
+        ax2.set_xlabel("z [m]")
+        ax2.set_ylabel("Y_i [-]")
+        ax2.grid(True, alpha=0.3)
+        ax2.legend()
+
+        fig.tight_layout()
+        fig.savefig(path, dpi=dpi, bbox_inches="tight")
+        plt.close(fig)
+
+    def save_reaction_rates(self, path, dpi=200):
+        """
+        Plot forward/backward rate of each reaction vs axial position.
+        Requires solver.reactionRates with shape (n_reactions, 2, n_cells)
+        and solver.reactions: List[Reaction].
+        """
+        z = self.get_axis()
+        rates = getattr(self.solver, "reactionRates", None)
+        reactions = getattr(self.solver, "reactions", None)
+        if rates is None or reactions is None:
+            raise AttributeError(
+                "solver.reactionRates / solver.reactions not available; "
+                "multi-reaction rate tracking is required for this plot"
+            )
+
+        fig, ax = plt.subplots(figsize=(8, 4))
+        for r_idx, rxn in enumerate(reactions):
+            rf = rates[r_idx, 0, :]
+            rb = rates[r_idx, 1, :]
+            ax.plot(z, rf, lw=2, label=f"{rxn.name} (fwd)")
+            if rxn.isReversible:
+                ax.plot(z, rb, lw=2, ls="--", label=f"{rxn.name} (bwd)")
+        ax.set_xlabel("Axial position z [m]")
+        ax.set_ylabel("Rate [mol/(m^3 s)]")
+        ax.grid(True, alpha=0.3)
+        ax.legend(fontsize=8)
+        fig.tight_layout()
+        fig.savefig(path, dpi=dpi, bbox_inches="tight")
+        plt.close(fig)
+
+    def save_heat_source(self, path, dpi=200):
+        z = self.get_axis()
+        q = getattr(self.solver, "heatReactionSources", None)
+        if q is None:
+            q = self.solver.heatSources
+
+        fig, ax = plt.subplots(figsize=(8, 4))
+        ax.plot(z, q, color="orange", lw=2, label="Reaction heat source")
+        ax.axhline(0.0, color="black", lw=0.8, alpha=0.5)
+        ax.set_xlabel("Axial position z [m]")
+        ax.set_ylabel("Heat source [W/m^3]")
+        ax.grid(True, alpha=0.3)
+        ax.legend()
+        fig.tight_layout()
+        fig.savefig(path, dpi=dpi, bbox_inches="tight")
+        plt.close(fig)
+
+    def save_concentrations(self, path, dpi=200):
+        z = self.get_axis()
+        species = self._species_list()
+        C = self.solver.concentrationArray()
+
+        fig, ax = plt.subplots(figsize=(8, 4))
+        for i, sp in enumerate(species):
+            ax.plot(z, C[i, :], lw=2, label=sp.name)
+        ax.set_xlabel("Axial position z [m]")
+        ax.set_ylabel("Concentration [mol/m^3]")
+        ax.grid(True, alpha=0.3)
+        ax.legend()
+        fig.tight_layout()
+        fig.savefig(path, dpi=dpi, bbox_inches="tight")
+        plt.close(fig)

@@ -1,3 +1,4 @@
+
 # main.py
 import copy
 from pathlib import Path
@@ -6,6 +7,7 @@ import yaml
 from scripts.usrExpr import UserExpression
 from scripts.PSOOPtimizer import PSOConfig, PSOOptimizer
 from scripts.solverReactor import build_reactor_from_context, Outlet, ReactorPlotter
+
 
 def load_yaml(path):
     with open(path) as f:
@@ -21,7 +23,6 @@ def _save_yaml(path, data):
 
 def load_expression_registry(path, expr_cls=UserExpression):
     raw = load_yaml(path)
-
     if not isinstance(raw, dict):
         raise TypeError(f"{path} must contain a mapping of name: expression")
 
@@ -29,7 +30,7 @@ def load_expression_registry(path, expr_cls=UserExpression):
     for name, expr in raw.items():
         if not isinstance(expr, str):
             raise TypeError(
-                f"{path}: expression '{name}' must be a string, got {type(expr).__name__}"
+                f"{path}: expression \'{name}\' must be a string, got {type(expr).__name__}"
             )
         registry[name] = expr_cls(expr)
 
@@ -42,6 +43,7 @@ def make_serializable_context(ctx):
     out.pop("outletExpressions", None)
     return out
 
+
 def make_case_dir(base_dir, study_name):
     base_dir = Path(base_dir)
     base_dir.mkdir(parents=True, exist_ok=True)
@@ -53,6 +55,8 @@ def make_case_dir(base_dir, study_name):
             case_dir.mkdir(parents=True, exist_ok=False)
             return case_dir
         i += 1
+
+
 def build_context(config_dir, expr_cls=UserExpression):
     config_dir = Path(config_dir)
 
@@ -61,12 +65,12 @@ def build_context(config_dir, expr_cls=UserExpression):
     solver_cfg = load_yaml(config_dir / "solverNumerics.yaml")
     species_cfg = load_yaml(config_dir / "speciesConfig.yaml")
     pso_cfg = load_yaml(config_dir / "psoAlgorithm.yaml")
+    plotting_cfg = load_yaml(config_dir / "plottingConfig.yaml") if (config_dir / "plottingConfig.yaml").exists() else {}
 
     expr_registry = load_expression_registry(config_dir / "userExpressions.yaml", expr_cls)
 
     outlet_expr_path = config_dir / "outletConfig.yaml"
-    outlet_expr_registry = load_expression_registry(outlet_expr_path
-    ) if outlet_expr_path.exists() else {}
+    outlet_expr_registry = load_expression_registry(outlet_expr_path) if outlet_expr_path.exists() else {}
 
     print("Loaded outlet expressions:", outlet_expr_registry.keys())
 
@@ -81,11 +85,13 @@ def build_context(config_dir, expr_cls=UserExpression):
         "solver": solver_cfg,
         "chemistry": species_cfg,
         "pso": pso_cfg,
+        "plotting": plotting_cfg,
         "expressions": expr_registry,
         "outletExpressions": outlet_expr_registry,
     }
 
     return ctx
+
 
 def resolve_value(value, root_ctx, expr_registry):
     if isinstance(value, str) and value in expr_registry:
@@ -186,6 +192,7 @@ def apply_particle_to_context(ctx, particle, parameter_defs):
     for x, param in zip(particle, parameter_defs):
         set_by_dotted_path(ctx, param["key"], float(x))
 
+
 def extract_objectives_for_pso(result_ctx, output_defs):
     values = []
 
@@ -219,6 +226,57 @@ def extract_objectives_for_pso(result_ctx, output_defs):
 
     return values
 
+
+def generate_plots(slv, species, case_dir, plotting_cfg):
+    """
+    Drive ReactorPlotter based on a plotting config block, e.g.:
+
+    plotting:
+      enabled: true
+      temperature: true
+      species: true
+      profiles: true
+      reaction_rates: true
+      heat_source: true
+      species_subset: [SO2, O2, SO3]
+      dpi: 200
+    """
+    if plotting_cfg and not plotting_cfg.get("enabled", True):
+        return
+
+    dpi = int(plotting_cfg.get("dpi", 200)) if plotting_cfg else 200
+    subset = plotting_cfg.get("species_subset") if plotting_cfg else None
+
+    plotter = ReactorPlotter(slv)
+    case_dir = Path(case_dir)
+
+    def wants(flag_name, default=True):
+        if not plotting_cfg:
+            return default
+        return bool(plotting_cfg.get(flag_name, default))
+
+    if wants("temperature"):
+        plotter.save_temperature(case_dir / "temperature.png", dpi=dpi)
+
+    if wants("species"):
+        if subset and hasattr(plotter, "save_species_subset"):
+            plotter.save_species_subset(case_dir / "species.png", names=subset, dpi=dpi)
+        else:
+            plotter.save_species(case_dir / "species.png", dpi=dpi)
+
+    if wants("profiles"):
+        plotter.save_all(case_dir / "profiles.png", dpi=dpi)
+
+    if wants("reaction_rates", default=False) and hasattr(plotter, "save_reaction_rates"):
+        plotter.save_reaction_rates(case_dir / "reaction_rates.png", dpi=dpi)
+
+    if wants("heat_source", default=False) and hasattr(plotter, "save_heat_source"):
+        plotter.save_heat_source(case_dir / "heat_source.png", dpi=dpi)
+
+    if wants("concentrations", default=False) and hasattr(plotter, "save_concentrations"):
+        plotter.save_concentrations(case_dir / "concentrations.png", dpi=dpi)
+
+
 def run_case(case_ctx, case_dir):
     slv, species = build_reactor_from_context(case_ctx)
     slv.initializeCase()
@@ -250,10 +308,10 @@ def run_case(case_ctx, case_dir):
             "outlet": outlet_data,
         },
     )
-    plotter = ReactorPlotter(slv)
-    plotter.save_temperature(Path(case_dir) / "temperature.png")
-    plotter.save_species(Path(case_dir) / "species.png")
-    plotter.save_all(Path(case_dir) / "profiles.png")
+
+    plotting_cfg = case_ctx.get("plotting", {})
+    generate_plots(slv, species, case_dir, plotting_cfg)
+
     return {
         "temperature": float(outlet_data["temperature"]),
         "specie": {k: float(v) for k, v in outlet_data["speciesMassFractions"].items()},
@@ -262,6 +320,7 @@ def run_case(case_ctx, case_dir):
         "massFlowrate": float(outlet_data["massFlowrate"]),
         "concentrations": {k: float(v) for k, v in outlet_data["concentrations"].items()},
     }
+
 
 def make_pso_config_from_context(ctx):
     pso_block = ctx["pso"]["pso"]
@@ -304,6 +363,7 @@ def main():
 
     pso_cfg = make_pso_config_from_context(base_ctx)
     print(pso_cfg)
+
     def objective_function(particle, iteration):
         case_ctx = copy.deepcopy(base_ctx)
 
@@ -343,15 +403,15 @@ def main():
         print("derived =", outlet_expr_values)
         print("output defs =", case_ctx["pso"]["outputs"])
 
-        
         return extract_objectives_for_pso(result_ctx, case_ctx["pso"]["outputs"])
 
     optimizer = PSOOptimizer.from_random(pso_cfg, objective_function=objective_function)
     swarm = optimizer.run()
-    
+
     best_particle = swarm.global_best_position
     print("Optimization finished.")
     print("Best particle:", best_particle)
+
 
 if __name__ == "__main__":
     main()

@@ -91,8 +91,6 @@ class Swarm:
         self.single_objective = config.n_responses == 1
 
         if self.single_objective:
-            # No weight-vector decomposition needed; every particle shares
-            # the same global-best neighborhood (classic gbest PSO).
             self.weights = None
             self.neighbors = np.tile(np.arange(pop_size), (pop_size, 1))
         else:
@@ -143,9 +141,7 @@ class Swarm:
 
     def _tcheby_scalars(self, gains: np.ndarray, particles: np.ndarray) -> np.ndarray:
         if self.single_objective:
-            # Plain (unweighted) objective value, still normalized by the
-            # running ideal/nadir range so it stays on a comparable scale
-            # with the penalty term.
+
             scale = self.z_nad[0] - self.z_ref[0] if abs(self.z_nad[0] - self.z_ref[0]) > 1e-8 else 1.0
             tcheby = np.abs(gains[0] - self.z_ref[0]) / scale
         else:
@@ -175,10 +171,6 @@ class Swarm:
     def update_bests(self, new_gains: np.ndarray) -> None:
         self.z_ref = np.minimum(self.z_ref, np.min(new_gains, axis=1))
         self.z_nad = np.maximum(self.z_nad, np.max(new_gains, axis=1))
-
-        # z_ref / z_nad just changed, so pbest_scalars computed on an older
-        # normalization is stale. Recompute it on the *current* pbest_gains
-        # under the updated ideal/nadir point before comparing.
         self.pbest_scalars = self._tcheby_scalars(self.pbest_gains, self.pbest_positions)
 
         new_scalars = self._tcheby_scalars(new_gains, self.particles)
