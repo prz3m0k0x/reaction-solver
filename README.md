@@ -8,6 +8,13 @@ This project simulates a 1D plug-flow reactor with coupled species transport, ch
 
 The pipeline is fully YAML-driven: mesh geometry, inlet conditions, species thermodynamics, reaction kinetics, solver numerics, PSO hyperparameters, and plotting options are all defined in config files rather than hardcoded, and a lightweight expression engine allows derived quantities (e.g., normalized mass fractions) to be computed from other config values.
 
+The output of the solver is a set of graphs representing axial distribution of temperature and species in the reactor. Each run produces its own directory as <cases/name_of_run_pso%d>, where the graphs can be accesed. It also produces input and output yaml files, along with a debug file that contains context dictionary of a case. 
+
+![Graph of temperature and species for unoptimized case](doc/fig/unoptimized.png)
+
+![Graph of temperature and species for optimized case](doc/fig/optimized.png)
+
+
 ## Key Features
 
 - Finite-volume 1D solver with first-order upwind convection, segregated species/temperature equations, and implicit source-term linearization
